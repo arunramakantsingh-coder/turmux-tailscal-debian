@@ -1,14 +1,6 @@
 #!/data/data/com.termux/files/usr/bin/bash
 set -Eeuo pipefail
 
-# Android Development Appliance
-# Termux + Tailscale userspace + Debian proot
-#
-# Runtime secrets:
-#   TS_AUTHKEY
-#   TERMUX_PASSWORD
-#   DEBIAN_PASSWORD
-
 DEBIAN_USER="${DEBIAN_USER:-admin}"
 TERMUX_SSH_PORT="${TERMUX_SSH_PORT:-8022}"
 DEBIAN_SSH_PORT="${DEBIAN_SSH_PORT:-2222}"
@@ -30,7 +22,7 @@ chmod 700 "$PREFIX/var/empty"
 ssh-keygen -A >/dev/null 2>&1 || true
 
 if [ -n "${TERMUX_PASSWORD:-}" ]; then
-  printf '%s\n%s\n' "$TERMUX_PASSWORD" "$TERMUX_PASSWORD" | passwd >/dev/null 2>&1 ||     warn "Could not change Termux password automatically."
+  printf '%s\n%s\n' "$TERMUX_PASSWORD" "$TERMUX_PASSWORD" | passwd >/dev/null 2>&1 || warn "Could not change Termux password automatically."
 fi
 
 if grep -qE '^[#[:space:]]*Port[[:space:]]+' "$PREFIX/etc/ssh/sshd_config" 2>/dev/null; then
@@ -52,14 +44,18 @@ MODEL="${MODEL:-android}"
 SUFFIX="$(tr -dc 'a-z0-9' </dev/urandom | head -c 4 || true)"
 AUTO_HOSTNAME="${MODEL}-${SUFFIX:-0000}"
 
-mkdir -p "$PREFIX/var/service/tailscaled" "$PREFIX/var/log"
+mkdir -p "$HOME/.tailscale"
+printf 'TS_SOCKS5_PORT=%s\n' "$TAILSCALE_SOCKS5_PORT" > "$HOME/.tailscale/.env"
+chmod 600 "$HOME/.tailscale/.env"
 
-if command -v sv >/dev/null 2>&1; then
+if command -v tailscaled-start >/dev/null 2>&1; then
+  tailscaled-start --service=on >/dev/null 2>&1 || true
+elif command -v sv >/dev/null 2>&1; then
   sv-enable tailscaled 2>/dev/null || true
   sv up tailscaled 2>/dev/null || true
 fi
 
-sleep 2
+sleep 3
 
 log "Authenticating Tailscale"
 if [ -n "${TS_AUTHKEY:-}" ]; then
@@ -78,6 +74,19 @@ else
   [ -z "$AUTH_URL" ] || qrencode -t UTF8 "$AUTH_URL" || true
 fi
 
+log "Reading generated SOCKS5 credentials"
+SOCKS_INFO="$(tailscale-socks5 2>/dev/null || true)"
+SOCKS_USER="$(printf '%s\n' "$SOCKS_INFO" | sed -n 's/^[[:space:]]*Username[[:space:]]*:[[:space:]]*//p' | head -1)"
+SOCKS_PASS="$(printf '%s\n' "$SOCKS_INFO" | sed -n 's/^[[:space:]]*Password[[:space:]]*:[[:space:]]*//p' | head -1)"
+
+log "Configuring Termux proxychains"
+cat > "$PREFIX/etc/proxychains.conf" <<PROXY
+strict_chain
+proxy_dns
+[ProxyList]
+socks5 127.0.0.1 $TAILSCALE_SOCKS5_PORT $SOCKS_USER $SOCKS_PASS
+PROXY
+
 log "Installing Debian"
 if ! proot-distro list 2>/dev/null | grep -q '^debian'; then
   proot-distro install debian
@@ -89,25 +98,19 @@ DEBIAN_ROOT="$PREFIX/var/lib/proot-distro/installed-rootfs/debian"
 cat > "$DEBIAN_ROOT/root/appliance-setup.sh" <<'DEBIAN_SETUP'
 #!/bin/bash
 set -Eeuo pipefail
-
 DEBIAN_USER="${DEBIAN_USER:-admin}"
 DEBIAN_SSH_PORT="${DEBIAN_SSH_PORT:-2222}"
 DEBIAN_PASSWORD="${DEBIAN_PASSWORD:-}"
-
+SOCKS_USER="${SOCKS_USER:-}"
+SOCKS_PASS="${SOCKS_PASS:-}"
+SOCKS_PORT="${SOCKS_PORT:-1055}"
 export DEBIAN_FRONTEND=noninteractive
 
-# Deliberately update package indexes but do not perform apt upgrade.
 apt-get update
+apt-get install -y build-essential git curl wget nano vim tmux htop python3 python3-pip python3-venv python3-dev sudo openssh-server net-tools iproute2 procps ca-certificates gnupg lsb-release pkg-config libssl-dev libffi-dev zlib1g-dev proxychains4 dnsutils nmap tcpdump netcat-openbsd
 
-apt-get install -y   build-essential git curl wget nano vim tmux htop   python3 python3-pip python3-venv python3-dev   sudo openssh-server net-tools iproute2 procps   ca-certificates gnupg lsb-release pkg-config   libssl-dev libffi-dev zlib1g-dev   proxychains4 dnsutils nmap tcpdump netcat-openbsd
-
-if ! id "$DEBIAN_USER" >/dev/null 2>&1; then
-  useradd -m -s /bin/bash -G sudo "$DEBIAN_USER"
-fi
-
-if [ -n "$DEBIAN_PASSWORD" ]; then
-  printf '%s:%s\n' "$DEBIAN_USER" "$DEBIAN_PASSWORD" | chpasswd
-fi
+if ! id "$DEBIAN_USER" >/dev/null 2>&1; then useradd -m -s /bin/bash -G sudo "$DEBIAN_USER"; fi
+if [ -n "$DEBIAN_PASSWORD" ]; then printf '%s:%s\n' "$DEBIAN_USER" "$DEBIAN_PASSWORD" | chpasswd; fi
 
 install -d -m 0755 /run/sshd
 ssh-keygen -A
@@ -124,11 +127,11 @@ else
   printf '\nPasswordAuthentication yes\n' >> /etc/ssh/sshd_config
 fi
 
-cat > /etc/proxychains4.conf <<'PROXY'
+cat > /etc/proxychains4.conf <<PROXY
 strict_chain
 proxy_dns
 [ProxyList]
-socks5 127.0.0.1 1055
+socks5 127.0.0.1 $SOCKS_PORT $SOCKS_USER $SOCKS_PASS
 PROXY
 
 rm -f /root/appliance-setup.sh
@@ -137,7 +140,7 @@ DEBIAN_SETUP
 chmod +x "$DEBIAN_ROOT/root/appliance-setup.sh"
 
 log "Configuring Debian"
-proot-distro login debian -- env   DEBIAN_PASSWORD="${DEBIAN_PASSWORD:-}"   DEBIAN_USER="$DEBIAN_USER"   DEBIAN_SSH_PORT="$DEBIAN_SSH_PORT"   bash /root/appliance-setup.sh
+proot-distro login debian -- env DEBIAN_PASSWORD="${DEBIAN_PASSWORD:-}" DEBIAN_USER="$DEBIAN_USER" DEBIAN_SSH_PORT="$DEBIAN_SSH_PORT" SOCKS_USER="$SOCKS_USER" SOCKS_PASS="$SOCKS_PASS" SOCKS_PORT="$TAILSCALE_SOCKS5_PORT" bash /root/appliance-setup.sh
 
 cat > "$HOME/start-debian-ssh" <<EOF
 #!/data/data/com.termux/files/usr/bin/bash
