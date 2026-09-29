@@ -1,0 +1,11 @@
+# Copy to a local untracked configuration if desired.
+# Never commit real values.
+
+TS_AUTHKEY=
+TERMUX_PASSWORD=
+DEBIAN_PASSWORD=
+
+DEBIAN_USER=admin
+TERMUX_SSH_PORT=8022
+DEBIAN_SSH_PORT=2222
+TAILSCALE_SOCKS5_PORT=1055
