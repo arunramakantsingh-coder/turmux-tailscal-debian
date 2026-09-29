@@ -1,0 +1,11 @@
+bootstrap/config.local
+.env
+.env.*
+*.key
+*.pem
+*.p12
+*.token
+secrets/
+private/
+*.log
+.DS_Store
