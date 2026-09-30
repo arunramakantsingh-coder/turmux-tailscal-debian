@@ -18,8 +18,9 @@ button,a.btn{display:inline-block;border:0;border-radius:10px;padding:12px 16px;
 <div class="card ok">
 <h2>Fresh phone provisioning</h2>
 <p>This is the front door for a new Android phone. Android installation is the only manual security boundary.</p>
-<ol><li>Install the official Termux app.</li><li>Open Termux once.</li><li>Copy the provisioning command below into Termux.</li><li>The bootstrap handles the remaining setup.</li></ol>
-<a class="btn" href="https://github.com/termux/termux-app/releases" target="_blank">Install official Termux</a>
+<ol><li>Tap <b>Download & Install Termux</b> below.</li><li>Android downloads the official Termux APK.</li><li>Open the downloaded APK and approve the Android installation.</li><li>Open Termux once, then run the provisioning command below.</li><li>The bootstrap handles the remaining setup.</li></ol>
+<a class="btn" href="https://github.com/termux/termux-app/releases/download/v0.118.3/termux-app_v0.118.3+github-debug_universal.apk">Download & Install Termux</a>
+<p class="muted">Official GitHub release • Termux v0.118.3 • Universal APK</p>
 </div>
 <div class="card">
 <h2>One-command provisioning</h2>
@@ -31,7 +32,7 @@ button,a.btn{display:inline-block;border:0;border-radius:10px;padding:12px 16px;
 <p>Scan this page URL to reach the provisioning page on the phone.</p>
 <div id="qr"></div>
 </div>
-<div class="card warn"><strong>Important:</strong> A normal GitHub Pages website cannot silently execute arbitrary Termux shell commands. Model 1 is: <b>install Termux → open Termux → run the provisioning command → everything else is automated.</b></div>
+<div class="card warn"><strong>Important:</strong> Android still requires the normal installation approval. A normal GitHub Pages website cannot silently install an APK or execute arbitrary Termux shell commands. Model 1 is: <b>download Termux → approve installation → open Termux → run the provisioning command → everything else is automated.</b></div>
 <div class="card"><h2>What the bootstrap installs</h2><p>Termux tools, Tailscale userspace networking, SSH, proxy support, Debian via proot-distro, and Debian development/networking tools.</p></div>
 <script>document.getElementById('qr').innerHTML='<code>'+location.href+'</code><p>Use the phone camera/QR scanner to open this URL.</p>';</script>
 </body></html>
