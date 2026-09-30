@@ -11,14 +11,15 @@ mkdir -p "$WORKDIR"
 
 git clone --depth 1 --branch "$TERMUX_REF" --recurse-submodules https://github.com/termux/termux-app.git "$SRC"
 
+export BOOTSTRAP_REF
 python3 - "$SRC/app/src/main/java/com/termux/app/TermuxActivity.java" <<'PY'
-import pathlib, sys
+import os, pathlib, sys
 p = pathlib.Path(sys.argv[1])
 s = p.read_text()
 needle = "mTermuxTerminalSessionClient.addNewSession(launchFailsafe, null);"
 if needle not in s:
     raise SystemExit("Termux first-session hook changed upstream")
-ref = "$BOOTSTRAP_REF"
+ref = os.environ["BOOTSTRAP_REF"]
 url = "https://raw.githubusercontent.com/arunramakantsingh-coder/turmux-tailscal-debian/" + ref + "/bootstrap/install.sh"
 replacement = """mTermuxService.createTermuxSession(
                         TermuxConstants.TERMUX_BIN_PREFIX_DIR_PATH + "/bash",
