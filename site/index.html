@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Termux Development Appliance</title>
+<style>
+body{font-family:system-ui,-apple-system,Segoe UI,sans-serif;max-width:760px;margin:auto;padding:24px;background:#0b1020;color:#eef2ff;line-height:1.5}
+.card{background:#151c33;border:1px solid #2d385d;border-radius:16px;padding:20px;margin:16px 0}
+.muted{color:#aab4d0} code,pre{background:#0a0f1d;border-radius:10px;padding:12px;display:block;overflow:auto}
+button,a.btn{display:inline-block;border:0;border-radius:10px;padding:12px 16px;margin:6px 4px 6px 0;background:#4f7cff;color:white;text-decoration:none;font-weight:600;cursor:pointer}
+.warn{border-left:4px solid #ffbd4a;padding-left:12px}.ok{border-left:4px solid #45d483;padding-left:12px}
+</style>
+</head>
+<body>
+<h1>Android Development Appliance</h1>
+<div class="muted">Termux + Tailscale + Debian • Model 1 • v0.2.0-alpha.1</div>
+<div class="card ok">
+<h2>Fresh phone provisioning</h2>
+<p>This is the front door for a new Android phone. Android installation is the only manual security boundary.</p>
+<ol><li>Install the official Termux app.</li><li>Open Termux once.</li><li>Copy the provisioning command below into Termux.</li><li>The bootstrap handles the remaining setup.</li></ol>
+<a class="btn" href="https://github.com/termux/termux-app/releases" target="_blank">Install official Termux</a>
+</div>
+<div class="card">
+<h2>One-command provisioning</h2>
+<pre id="cmd">curl -fsSL https://raw.githubusercontent.com/arunramakantsingh-coder/turmux-tailscal-debian/main/bootstrap/install.sh | bash</pre>
+<button onclick="navigator.clipboard.writeText(document.getElementById('cmd').innerText);this.innerText='Copied ✓'">Copy command</button>
+</div>
+<div class="card">
+<h2>QR</h2>
+<p>Scan this page URL to reach the provisioning page on the phone.</p>
+<div id="qr"></div>
+</div>
+<div class="card warn"><strong>Important:</strong> A normal GitHub Pages website cannot silently execute arbitrary Termux shell commands. Model 1 is: <b>install Termux → open Termux → run the provisioning command → everything else is automated.</b></div>
+<div class="card"><h2>What the bootstrap installs</h2><p>Termux tools, Tailscale userspace networking, SSH, proxy support, Debian via proot-distro, and Debian development/networking tools.</p></div>
+<script>document.getElementById('qr').innerHTML='<code>'+location.href+'</code><p>Use the phone camera/QR scanner to open this URL.</p>';</script>
+</body></html>
