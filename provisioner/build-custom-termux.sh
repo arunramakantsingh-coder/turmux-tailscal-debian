@@ -28,10 +28,8 @@ replacement = """mTermuxService.createTermuxSession(
                         TermuxConstants.TERMUX_HOME_DIR_PATH,
                         launchFailsafe,
                         "appliance-provision");
-                if (applianceSession != null) {
-                    if (mTermuxService.getLastTermuxSession() != null) {
+                if (mTermuxService.getLastTermuxSession() != null) {
                     mTermuxTerminalSessionClient.setCurrentSession(mTermuxService.getLastTermuxSession().getTerminalSession());
-                }
                 }"""
 p.write_text(s.replace(needle, replacement, 1))
 PY
@@ -55,4 +53,4 @@ APK="$(find app/build/outputs/apk/debug -maxdepth 1 -type f -name '*universal*.a
 [ -n "$APK" ] || { echo "No APK produced"; exit 1; }
 
 mkdir -p "$OLDPWD/site"
-cp "$APK" "$OLDPWD/site/android-development-appliance-v0.5.0-alpha.4.apk"
+cp "$APK" "$OLDPWD/site/android-development-appliance-v0.5.0-alpha.5.apk"
