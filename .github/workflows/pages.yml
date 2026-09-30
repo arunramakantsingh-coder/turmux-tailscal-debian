@@ -63,5 +63,5 @@ jobs:
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: android-development-appliance-v0.5.0-alpha.4
-          path: site/android-development-appliance-v0.5.0-alpha.4.apk
+          name: android-development-appliance-v0.5.0-alpha.5
+          path: site/android-development-appliance-v0.5.0-alpha.5.apk
