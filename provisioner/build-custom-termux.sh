@@ -21,7 +21,7 @@ if needle not in s:
     raise SystemExit("Termux first-session hook changed upstream")
 ref = os.environ["BOOTSTRAP_REF"]
 url = "https://raw.githubusercontent.com/arunramakantsingh-coder/turmux-tailscal-debian/" + ref + "/bootstrap/install.sh"
-replacement = """com.termux.shared.termux.shell.command.runner.terminal.TermuxSession applianceSession = mTermuxService.createTermuxSession(
+replacement = """mTermuxService.createTermuxSession(
                         TermuxConstants.TERMUX_BIN_PREFIX_DIR_PATH + "/bash",
                         new String[]{"-lc", "curl -fsSL """ + url + """ | bash"},
                         null,
@@ -29,7 +29,9 @@ replacement = """com.termux.shared.termux.shell.command.runner.terminal.TermuxSe
                         launchFailsafe,
                         "appliance-provision");
                 if (applianceSession != null) {
-                    mTermuxTerminalSessionClient.setCurrentSession(applianceSession.getTerminalSession());
+                    if (mTermuxService.getLastTermuxSession() != null) {
+                    mTermuxTerminalSessionClient.setCurrentSession(mTermuxService.getLastTermuxSession().getTerminalSession());
+                }
                 }"""
 p.write_text(s.replace(needle, replacement, 1))
 PY
@@ -53,4 +55,4 @@ APK="$(find app/build/outputs/apk/debug -maxdepth 1 -type f -name '*universal*.a
 [ -n "$APK" ] || { echo "No APK produced"; exit 1; }
 
 mkdir -p "$OLDPWD/site"
-cp "$APK" "$OLDPWD/site/android-development-appliance-v0.5.0-alpha.1.apk"
+cp "$APK" "$OLDPWD/site/android-development-appliance-v0.5.0-alpha.3.apk"
