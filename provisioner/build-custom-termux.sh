@@ -16,7 +16,7 @@ python3 - "$SRC/app/src/main/java/com/termux/app/TermuxActivity.java" <<'PY'
 import os, pathlib, sys
 p = pathlib.Path(sys.argv[1])
 s = p.read_text()
-needle = "mTermuxTerminalSessionActivityClient.addNewSession(launchFailsafe, null);"
+needle = "mTermuxTerminalSessionClient.addNewSession(launchFailsafe, null);"
 if needle not in s:
     raise SystemExit("Termux first-session hook changed upstream")
 ref = os.environ["BOOTSTRAP_REF"]
@@ -29,8 +29,7 @@ replacement = """com.termux.shared.termux.shell.command.runner.terminal.TermuxSe
                         launchFailsafe,
                         "appliance-provision");
                 if (applianceSession != null) {
-                    mTermuxTerminalSessionActivityClient.setCurrentSession(applianceSession.getTerminalSession());
-                    mTermuxService.setTermuxTerminalSessionClient(mTermuxTerminalSessionActivityClient);
+                    mTermuxTerminalSessionClient.setCurrentSession(applianceSession.getTerminalSession());
                 }"""
 p.write_text(s.replace(needle, replacement, 1))
 PY
