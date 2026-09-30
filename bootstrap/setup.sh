@@ -110,17 +110,19 @@ else
   warn "Tailscale authentication still pending."
 fi
 
+SOCKS_USER=""
+SOCKS_PASS=""
 configure_proxy(){
-  local info user pass
+  local info
   info="$(tailscale-socks5 2>/dev/null || true)"
-  user="$(printf '%s\n' "$info" | sed -n 's/^[[:space:]]*Username[[:space:]]*:[[:space:]]*//p' | head -1)"
-  pass="$(printf '%s\n' "$info" | sed -n 's/^[[:space:]]*Password[[:space:]]*:[[:space:]]*//p' | head -1)"
-  if [ -n "$user" ] && [ -n "$pass" ]; then
+  SOCKS_USER="$(printf '%s\n' "$info" | sed -n 's/^[[:space:]]*Username[[:space:]]*:[[:space:]]*//p' | head -1)"
+  SOCKS_PASS="$(printf '%s\n' "$info" | sed -n 's/^[[:space:]]*Password[[:space:]]*:[[:space:]]*//p' | head -1)"
+  if [ -n "$SOCKS_USER" ] && [ -n "$SOCKS_PASS" ]; then
     cat > "$PREFIX/etc/proxychains.conf" <<EOF
 strict_chain
 proxy_dns
 [ProxyList]
-socks5 127.0.0.1 $TAILSCALE_SOCKS5_PORT $user $pass
+socks5 127.0.0.1 $TAILSCALE_SOCKS5_PORT $SOCKS_USER $SOCKS_PASS
 EOF
     chmod 600 "$PREFIX/etc/proxychains.conf"
   fi
@@ -133,7 +135,7 @@ if ! proot-distro list 2>/dev/null | grep -qE '^debian([[:space:]]|$)'; then
 fi
 
 log "Debian packages (no apt upgrade)"
-proot-distro login debian -- env DEBIAN_USER="$DEBIAN_USER" DEBIAN_PASSWORD="$DEBIAN_PASSWORD" DEBIAN_SSH_PORT="$DEBIAN_SSH_PORT" SOCKS_PORT="$TAILSCALE_SOCKS5_PORT" bash -s <<'DEBIAN'
+proot-distro login debian -- env DEBIAN_USER="$DEBIAN_USER" DEBIAN_PASSWORD="$DEBIAN_PASSWORD" DEBIAN_SSH_PORT="$DEBIAN_SSH_PORT" SOCKS_PORT="$TAILSCALE_SOCKS5_PORT" SOCKS_USER="$SOCKS_USER" SOCKS_PASS="$SOCKS_PASS" bash -s <<'DEBIAN'
 set -Eeuo pipefail
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
@@ -160,11 +162,30 @@ cat > /etc/proxychains4.conf <<PROXY
 strict_chain
 proxy_dns
 [ProxyList]
-socks5 127.0.0.1 $SOCKS_PORT
+socks5 127.0.0.1 $SOCKS_PORT $SOCKS_USER $SOCKS_PASS
 PROXY
 mkdir -p /workspace
 chown "$DEBIAN_USER:$DEBIAN_USER" /workspace
 DEBIAN
+
+cat > "$HOME/appliance-complete" <<'EOF'
+#!/data/data/com.termux/files/usr/bin/bash
+set -Eeuo pipefail
+HOSTNAME="$(cat "$HOME/.appliance/state/hostname")"
+tailscale-cli up --hostname="$HOSTNAME"
+SOCKS_INFO="$(tailscale-socks5 2>/dev/null || true)"
+SOCKS_USER="$(printf '%s\n' "$SOCKS_INFO" | sed -n 's/^[[:space:]]*Username[[:space:]]*:[[:space:]]*//p' | head -1)"
+SOCKS_PASS="$(printf '%s\n' "$SOCKS_INFO" | sed -n 's/^[[:space:]]*Password[[:space:]]*:[[:space:]]*//p' | head -1)"
+cat > "$PREFIX/etc/proxychains.conf" <<PROXY
+strict_chain
+proxy_dns
+[ProxyList]
+socks5 127.0.0.1 1055 $SOCKS_USER $SOCKS_PASS
+PROXY
+chmod 600 "$PREFIX/etc/proxychains.conf"
+echo "Tailscale/proxy completion updated."
+EOF
+chmod +x "$HOME/appliance-complete"
 
 log "Debian SSH helper"
 cat > "$HOME/start-debian-ssh" <<'EOF'
