@@ -6,11 +6,29 @@ DEBIAN_USER="${DEBIAN_USER:-admin}"
 TERMUX_SSH_PORT="${TERMUX_SSH_PORT:-8022}"
 DEBIAN_SSH_PORT="${DEBIAN_SSH_PORT:-2222}"
 TAILSCALE_SOCKS5_PORT="${TAILSCALE_SOCKS5_PORT:-1055}"
+SHOW_LAB_CREDENTIALS="${SHOW_LAB_CREDENTIALS:-true}"
 APP_HOME="${HOME}/.appliance"
 STATE="$APP_HOME/state"
 LOGS="$APP_HOME/logs"
 
 mkdir -p "$STATE" "$LOGS"
+AUTH_FILE="$APP_HOME/tailscale-authkey"
+if [ ! -f "$AUTH_FILE" ] && [ -z "${TS_AUTHKEY:-}" ]; then
+  printf '\n=== Tailscale first-run configuration ===\n'
+  printf 'Enter the Tailscale auth key once. It will be stored locally with mode 600 and deleted after successful authentication.\n'
+  printf 'Tag expected on the key: AuthkeyNodes\n'
+  while :; do
+    read -r -s -p 'Tailscale Auth Key: ' TS_INPUT
+    printf '\n'
+    if [[ "$TS_INPUT" == tskey-auth-* ]]; then
+      printf '%s' "$TS_INPUT" > "$AUTH_FILE"
+      chmod 600 "$AUTH_FILE"
+      unset TS_INPUT
+      break
+    fi
+    printf '[ERROR] That does not look like a Tailscale auth key. Please try again.\n'
+  done
+fi
 exec > >(tee -a "$LOGS/provisioning.log") 2>&1
 
 log(){ printf '\n[+] %s\n' "$*"; }
@@ -82,26 +100,23 @@ ts_up(){
 
 if ! ts_up; then
   if [ -n "${TS_AUTHKEY:-}" ]; then
-    log "Using supplied Tailscale auth key"
-    tailscale-cli up --auth-key="$TS_AUTHKEY" --hostname="$HOSTNAME" || true
+    printf '%s' "$TS_AUTHKEY" > "$AUTH_FILE"
+    chmod 600 "$AUTH_FILE"
+  fi
+  if [ -f "$AUTH_FILE" ]; then
+    log "Using locally supplied Tailscale auth key"
+    TS_AUTHKEY="$(cat "$AUTH_FILE")"
+    tailscale-cli up --auth-key="$TS_AUTHKEY" --hostname="$HOSTNAME"
+    unset TS_AUTHKEY
   fi
 fi
 
 if ! ts_up; then
-  log "Waiting for Tailscale browser authentication"
-  OUT="$(tailscale-cli up --hostname="$HOSTNAME" 2>&1 || true)"
-  printf '%s\n' "$OUT"
-  URL="$(printf '%s\n' "$OUT" | grep -oE 'https://login.tailscale.com/[^[:space:]]+' | head -1 || true)"
-  if [ -n "$URL" ]; then
-    printf '\n--- Tailscale QR ---\n'
-    qrencode -t UTF8 "$URL" || true
-    printf '%s\n--- End QR ---\n' "$URL"
-  fi
-  for _ in $(seq 1 150); do
-    ts_up && break
-    sleep 2
-  done
+  die "Tailscale authentication failed. Check the auth key and ensure it is tagged AuthkeyNodes."
 fi
+
+rm -f "$AUTH_FILE"
+
 
 if ts_up; then
   printf 'authenticated=true\n' > "$STATE/tailscale.env"
@@ -118,6 +133,19 @@ configure_proxy(){
   SOCKS_USER="$(printf '%s\n' "$info" | sed -n 's/^[[:space:]]*Username[[:space:]]*:[[:space:]]*//p' | head -1)"
   SOCKS_PASS="$(printf '%s\n' "$info" | sed -n 's/^[[:space:]]*Password[[:space:]]*:[[:space:]]*//p' | head -1)"
   if [ -n "$SOCKS_USER" ] && [ -n "$SOCKS_PASS" ]; then
+    PROXY_URL="socks5://$SOCKS_USER:$SOCKS_PASS@127.0.0.1:$TAILSCALE_SOCKS5_PORT"
+    cat > "$HOME/.appliance/proxy.env" <<EOF
+export ALL_PROXY="$PROXY_URL"
+export HTTP_PROXY="$PROXY_URL"
+export HTTPS_PROXY="$PROXY_URL"
+export all_proxy="$PROXY_URL"
+export http_proxy="$PROXY_URL"
+export https_proxy="$PROXY_URL"
+export NO_PROXY="127.0.0.1,localhost,::1,100.64.0.0/10,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"
+export no_proxy="$NO_PROXY"
+EOF
+    chmod 600 "$HOME/.appliance/proxy.env"
+    grep -qxF '[ -f "$HOME/.appliance/proxy.env" ] && . "$HOME/.appliance/proxy.env"' "$HOME/.bashrc" 2>/dev/null || printf '\n[ -f "$HOME/.appliance/proxy.env" ] && . "$HOME/.appliance/proxy.env"\n' >> "$HOME/.bashrc"
     cat > "$PREFIX/etc/proxychains.conf" <<EOF
 strict_chain
 proxy_dns
@@ -166,6 +194,17 @@ socks5 127.0.0.1 $SOCKS_PORT $SOCKS_USER $SOCKS_PASS
 PROXY
 mkdir -p /workspace
 chown "$DEBIAN_USER:$DEBIAN_USER" /workspace
+cat > /etc/profile.d/appliance-proxy.sh <<PROXYENV
+export ALL_PROXY="socks5://$SOCKS_USER:$SOCKS_PASS@127.0.0.1:$SOCKS_PORT"
+export HTTP_PROXY="$ALL_PROXY"
+export HTTPS_PROXY="$ALL_PROXY"
+export all_proxy="$ALL_PROXY"
+export http_proxy="$ALL_PROXY"
+export https_proxy="$ALL_PROXY"
+export NO_PROXY="127.0.0.1,localhost,::1,100.64.0.0/10,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"
+export no_proxy="$NO_PROXY"
+PROXYENV
+chmod 644 /etc/profile.d/appliance-proxy.sh
 DEBIAN
 
 cat > "$HOME/appliance-complete" <<'EOF'
@@ -275,6 +314,7 @@ EOF
 chmod +x "$HOME/appliance-status"
 
 printf 'provisioned=true\n' > "$STATE/provisioned"
+printf 'show_lab_credentials=%s\n' "$SHOW_LAB_CREDENTIALS" > "$STATE/config"
 printf 'hostname=%s\n' "$HOSTNAME" >> "$STATE/provisioned"
 log "Provisioning complete"
 printf 'Details page: http://127.0.0.1:8080\n'

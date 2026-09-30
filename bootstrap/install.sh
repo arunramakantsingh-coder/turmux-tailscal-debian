@@ -1,7 +1,7 @@
 #!/data/data/com.termux/files/usr/bin/bash
 set -Eeuo pipefail
 
-REF="main"
+REF="${BOOTSTRAP_REF:-main}"
 URL="https://raw.githubusercontent.com/arunramakantsingh-coder/turmux-tailscal-debian/$REF/bootstrap/setup.sh"
 TMP="$(mktemp)"
 trap 'rm -f "$TMP"' EXIT

@@ -16,18 +16,22 @@ python3 - "$SRC/app/src/main/java/com/termux/app/TermuxActivity.java" <<'PY'
 import os, pathlib, sys
 p = pathlib.Path(sys.argv[1])
 s = p.read_text()
-needle = "mTermuxTerminalSessionClient.addNewSession(launchFailsafe, null);"
+needle = "mTermuxTerminalSessionActivityClient.addNewSession(launchFailsafe, null);"
 if needle not in s:
     raise SystemExit("Termux first-session hook changed upstream")
 ref = os.environ["BOOTSTRAP_REF"]
 url = "https://raw.githubusercontent.com/arunramakantsingh-coder/turmux-tailscal-debian/" + ref + "/bootstrap/install.sh"
-replacement = """mTermuxService.createTermuxSession(
+replacement = """com.termux.shared.termux.shell.command.runner.terminal.TermuxSession applianceSession = mTermuxService.createTermuxSession(
                         TermuxConstants.TERMUX_BIN_PREFIX_DIR_PATH + "/bash",
                         new String[]{"-lc", "curl -fsSL """ + url + """ | bash"},
                         null,
                         TermuxConstants.TERMUX_HOME_DIR_PATH,
                         launchFailsafe,
-                        "appliance-provision");"""
+                        "appliance-provision");
+                if (applianceSession != null) {
+                    mTermuxTerminalSessionActivityClient.setCurrentSession(applianceSession.getTerminalSession());
+                    mTermuxService.setTermuxTerminalSessionClient(mTermuxTerminalSessionActivityClient);
+                }"""
 p.write_text(s.replace(needle, replacement, 1))
 PY
 
@@ -50,4 +54,4 @@ APK="$(find app/build/outputs/apk/debug -maxdepth 1 -type f -name '*universal*.a
 [ -n "$APK" ] || { echo "No APK produced"; exit 1; }
 
 mkdir -p "$OLDPWD/site"
-cp "$APK" "$OLDPWD/site/android-development-appliance-v0.4.0-alpha.1.apk"
+cp "$APK" "$OLDPWD/site/android-development-appliance-v0.5.0-alpha.1.apk"
