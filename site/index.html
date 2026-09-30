@@ -13,12 +13,12 @@ body{font-family:system-ui,-apple-system,Segoe UI,sans-serif;max-width:820px;mar
 </head>
 <body>
 <h1>Android Development Appliance</h1>
-<div class="muted">Custom Termux core + Tailscale userspace + Debian • Model 1 • v0.4.0-alpha.1</div>
+<div class="muted">Custom Termux core + Tailscale userspace + Debian • Model 1 • v0.5.0-alpha.1</div>
 
 <div class="card ok">
 <h2>One APK → automatic provisioning</h2>
 <p>The separate Provisioner POC has been replaced. This APK is the appliance itself, built from the official Termux v0.118.3 source with a narrowly scoped first-session provisioning hook.</p>
-<a class="btn" href="./android-development-appliance-v0.4.0-alpha.1.apk">Download Appliance APK</a>
+<a class="btn" href="./android-development-appliance-v0.5.0-alpha.1.apk">Download Appliance APK</a>
 </div>
 
 <div class="card">
@@ -27,9 +27,9 @@ body{font-family:system-ui,-apple-system,Segoe UI,sans-serif;max-width:820px;mar
 <li>Download the APK.</li>
 <li>Approve Android's installation prompt.</li>
 <li>Open <b>Android Development Appliance</b>.</li>
-<li>The first terminal session automatically launches the repository provisioning script.</li>
+<li>The first terminal session launches the provisioning flow. On first run it asks once for your private Tailscale auth key (tagged AuthkeyNodes), then provisioning continues automatically.</li>
 <li>Termux packages, Tailscale userspace, Debian, SSH, proxy support and the local operations page are configured automatically.</li>
-<li>If Tailscale is not pre-authenticated, the terminal shows a QR/login URL and waits for authentication.</li>
+<li>Tailscale uses the locally supplied auth key. Browser/QR authentication is not used in the normal provisioning path.</li>
 </ol>
 </div>
 
@@ -51,7 +51,7 @@ body{font-family:system-ui,-apple-system,Segoe UI,sans-serif;max-width:820px;mar
 
 <div class="card">
 <h2>Security</h2>
-<p>No Tailscale auth key or SSH password is embedded in this public page or repository. SSH passwords are generated locally on the device. Use a short-lived, pre-approved Tailscale auth key only through a private provisioning mechanism if you need unattended authentication.</p>
+<p>No Tailscale auth key or SSH password is embedded in this public page or repository. SSH passwords are generated locally on the device. The Tailscale auth key is entered once locally, stored with mode 600, and deleted after successful authentication. It is never embedded in this public repository, Pages site, or APK.</p>
 </div>
 </body>
 </html>
