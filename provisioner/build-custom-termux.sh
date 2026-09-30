@@ -55,4 +55,4 @@ APK="$(find app/build/outputs/apk/debug -maxdepth 1 -type f -name '*universal*.a
 [ -n "$APK" ] || { echo "No APK produced"; exit 1; }
 
 mkdir -p "$OLDPWD/site"
-cp "$APK" "$OLDPWD/site/android-development-appliance-v0.5.0-alpha.3.apk"
+cp "$APK" "$OLDPWD/site/android-development-appliance-v0.5.0-alpha.4.apk"
