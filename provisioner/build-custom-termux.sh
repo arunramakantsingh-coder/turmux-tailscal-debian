@@ -35,7 +35,7 @@ replacement = """mTermuxTerminalSessionClient.addNewSession(launchFailsafe, null
                     com.termux.terminal.TerminalSession session =
                         mTermuxTerminalSessionClient.getCurrentStoredSessionOrLast();
                     if (session == null || !session.isRunning()) return;
-                    session.write("echo '[APPLIANCE] Starting automatic provisioning...'; pkg update -y && pkg install -y curl && curl -fsSL --retry 4 --retry-delay 2 \\"""" + url + """\\" | bash\\n");
+                    session.write("echo '[APPLIANCE] Starting automatic provisioning...'; pkg update -y && pkg install -y curl && curl -fsSL --retry 4 --retry-delay 2 " + url + " | bash\\n");
                 }, 1500);"""
 
 s = s.replace(needle, replacement, 1)
