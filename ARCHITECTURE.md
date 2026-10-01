@@ -43,7 +43,7 @@ Tailscale runs only in Termux. Debian uses the host networking environment.
 
 - Termux userspace mode
 - reusable/pre-authorized auth key supplied at runtime
-- QR authentication fallback when key authentication fails
+- QR/browser authentication is not part of the normal provisioning path
 - initial hostname: <model>-<random4>
 - hostname can later be renamed/fixed from the Tailscale admin console
 
@@ -80,7 +80,7 @@ Debian:
 
 The GitHub repository is the source of truth.
 
-The provisioning entry point is bootstrap/setup.sh.
+The provisioning entry point is bootstrap/setup.sh. The APK preserves the native Termux first-session lifecycle and starts the bootstrap only after the normal session is attached.
 
 Runtime secrets:
 - TS_AUTHKEY

@@ -8,7 +8,7 @@ FR-02: Install/verify the Termux Tailscale CLI implementation and start its user
 
 FR-03: Generate an initial hostname from Android model plus four random alphanumeric characters.
 
-FR-04: Prefer TS_AUTHKEY. If authentication fails, expose the login URL and QR fallback.
+FR-04: Require a runtime Tailscale auth key for normal provisioning; never embed it in the APK, repository, or Pages site.
 
 FR-05: Install Debian with proot-distro only when missing.
 
