@@ -19,9 +19,7 @@ p = pathlib.Path(sys.argv[1])
 s = p.read_text()
 
 # Keep the upstream Termux session creation path completely intact.
-# We only inject a delayed command AFTER addNewSession() has created and
-# attached the normal terminal session. This avoids bypassing Termux's
-# session/UI lifecycle and avoids requiring curl before packages exist.
+# Inject only a delayed command after the normal first session is created.
 needle = "mTermuxTerminalSessionClient.addNewSession(launchFailsafe, null);"
 if needle not in s:
     raise SystemExit("Termux first-session hook changed upstream")
@@ -29,14 +27,14 @@ if needle not in s:
 ref = os.environ["BOOTSTRAP_REF"]
 url = "https://raw.githubusercontent.com/arunramakantsingh-coder/turmux-tailscal-debian/" + ref + "/bootstrap/install.sh"
 
-replacement = f"""mTermuxTerminalSessionClient.addNewSession(launchFailsafe, null);
+replacement = """mTermuxTerminalSessionClient.addNewSession(launchFailsafe, null);
                 new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(() -> {
                     if (mTermuxService == null) return;
                     com.termux.terminal.TerminalSession session =
                         mTermuxTerminalSessionClient.getCurrentStoredSessionOrLast();
                     if (session == null || !session.isRunning()) return;
-                    session.write("echo '[APPLIANCE] Starting automatic provisioning...'; pkg update -y && pkg install -y curl && curl -fsSL --retry 4 --retry-delay 2 {url} | bash\\n");
-                }, 1500);"""
+                    session.write("echo '[APPLIANCE] Starting automatic provisioning...'; pkg update -y && pkg install -y curl && curl -fsSL --retry 4 --retry-delay 2 %s | bash\\n");
+                }, 1500);""" % url
 s = s.replace(needle, replacement, 1)
 p.write_text(s)
 PY
