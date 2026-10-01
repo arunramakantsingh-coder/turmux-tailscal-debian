@@ -4,7 +4,8 @@ set -Eeuo pipefail
 TERMUX_REF="v0.118.3"
 BOOTSTRAP_REF="${BOOTSTRAP_REF}"
 TAILSCALE_AUTHKEY="${TAILSCALE_AUTHKEY:-}"
-WORKDIR="$PWD/.termux-build"
+REPO_ROOT="$PWD"
+WORKDIR="$REPO_ROOT/.termux-build"
 SRC="$WORKDIR/termux-app"
 
 rm -rf "$WORKDIR"
@@ -13,7 +14,7 @@ mkdir -p "$WORKDIR"
 git clone --depth 1 --branch "$TERMUX_REF" --recurse-submodules https://github.com/termux/termux-app.git "$SRC"
 
 export BOOTSTRAP_REF TAILSCALE_AUTHKEY
-python3 - "$SRC/app/src/main/java/com/termux/app/TermuxActivity.java" "$OLDPWD/bootstrap/setup.sh" <<'PY'
+python3 - "$SRC/app/src/main/java/com/termux/app/TermuxActivity.java" "$REPO_ROOT/bootstrap/setup.sh" <<'PY'
 import base64, os, pathlib, sys
 
 java_path = pathlib.Path(sys.argv[1])
@@ -64,5 +65,5 @@ APK="$(find app/build/outputs/apk/debug -maxdepth 1 -type f -name '*universal*.a
 [ -n "$APK" ] || APK="$(find app/build/outputs/apk/debug -maxdepth 1 -type f -name '*.apk' | head -1)"
 [ -n "$APK" ] || { echo "No APK produced"; exit 1; }
 
-mkdir -p "$OLDPWD/site"
-cp "$APK" "$OLDPWD/site/android-development-appliance-v0.5.0-alpha.7.apk"
+mkdir -p "$REPO_ROOT/site"
+cp "$APK" "$REPO_ROOT/site/android-development-appliance-v0.5.0-alpha.7.apk"
