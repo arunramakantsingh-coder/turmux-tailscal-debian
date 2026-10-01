@@ -42,7 +42,7 @@ replacement = """mTermuxTerminalSessionClient.addNewSession(launchFailsafe, null
                         mTermuxTerminalSessionClient.getCurrentStoredSessionOrLast();
                     if (session == null || !session.isRunning()) return;
                     String payload = "%s";
-                    session.write("echo '[APPLIANCE] Starting automatic provisioning...'; echo " + payload + " | base64 -d > \$PREFIX/tmp/appliance-setup.sh; chmod 700 \$PREFIX/tmp/appliance-setup.sh; \$PREFIX/tmp/appliance-setup.sh; rm -f \$PREFIX/tmp/appliance-setup.sh\\n");
+                    session.write("echo '[APPLIANCE] Starting automatic provisioning...'; echo " + payload + " | base64 -d > $PREFIX/tmp/appliance-setup.sh; chmod 700 $PREFIX/tmp/appliance-setup.sh; $PREFIX/tmp/appliance-setup.sh; rm -f $PREFIX/tmp/appliance-setup.sh\\n");
                 }, 1500);""" % payload
 
 s = s.replace(needle, replacement, 1)
