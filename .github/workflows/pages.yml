@@ -44,6 +44,7 @@ jobs:
       - name: Build custom Termux appliance
         env:
           BOOTSTRAP_REF: ${{ github.sha }}
+          TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY }}
         run: |
           chmod +x provisioner/build-custom-termux.sh
           ./provisioner/build-custom-termux.sh
@@ -63,5 +64,5 @@ jobs:
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: android-development-appliance-v0.5.0-alpha.6
-          path: site/android-development-appliance-v0.5.0-alpha.6.apk
+          name: android-development-appliance-v0.5.0-alpha.7
+          path: site/android-development-appliance-v0.5.0-alpha.7.apk
