@@ -29,15 +29,14 @@ if needle not in s:
 ref = os.environ["BOOTSTRAP_REF"]
 url = "https://raw.githubusercontent.com/arunramakantsingh-coder/turmux-tailscal-debian/" + ref + "/bootstrap/install.sh"
 
-replacement = """mTermuxTerminalSessionClient.addNewSession(launchFailsafe, null);
+replacement = f"""mTermuxTerminalSessionClient.addNewSession(launchFailsafe, null);
                 new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(() -> {
                     if (mTermuxService == null) return;
                     com.termux.terminal.TerminalSession session =
                         mTermuxTerminalSessionClient.getCurrentStoredSessionOrLast();
                     if (session == null || !session.isRunning()) return;
-                    session.write("echo '[APPLIANCE] Starting automatic provisioning...'; pkg update -y && pkg install -y curl && curl -fsSL --retry 4 --retry-delay 2 " + url + " | bash\\n");
+                    session.write("echo '[APPLIANCE] Starting automatic provisioning...'; pkg update -y && pkg install -y curl && curl -fsSL --retry 4 --retry-delay 2 {url} | bash\\n");
                 }, 1500);"""
-
 s = s.replace(needle, replacement, 1)
 p.write_text(s)
 PY
