@@ -7,6 +7,10 @@ TERMUX_SSH_PORT="${TERMUX_SSH_PORT:-8022}"
 DEBIAN_SSH_PORT="${DEBIAN_SSH_PORT:-2222}"
 TAILSCALE_SOCKS5_PORT="${TAILSCALE_SOCKS5_PORT:-1055}"
 SHOW_LAB_CREDENTIALS="${SHOW_LAB_CREDENTIALS:-true}"
+# The Tailscale auth key is supplied on first run and is NEVER embedded in
+# the distributed APK. The literal below is a sentinel meaning "prompt for
+# the key". provisioner/build-custom-termux.sh refuses to build if a
+# credential is present in this file or in the produced APK.
 TS_AUTHKEY="${TS_AUTHKEY:-__EMBEDDED_TS_AUTHKEY__}"
 APP_HOME="${HOME}/.appliance"
 STATE="$APP_HOME/state"

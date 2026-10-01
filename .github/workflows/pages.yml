@@ -43,10 +43,47 @@ jobs:
       - name: Build custom Termux appliance
         env:
           BOOTSTRAP_REF: ${{ github.sha }}
-          TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY }}
         run: |
           chmod +x provisioner/build-custom-termux.sh
           ./provisioner/build-custom-termux.sh
+
+      # Defence in depth before anything crosses into the public repo.
+      # The APK is distributed publicly, so it must never carry a
+      # credential. Provisioning asks for the Tailscale auth key on first
+      # run instead of baking it in.
+      - name: Verify no secrets in publishable artifacts
+        run: |
+          set -Eeuo pipefail
+          fail=0
+          pattern='tskey-[a-z]+-[A-Za-z0-9]{6,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|BEGIN [A-Z ]*PRIVATE KEY'
+          if grep -rIlE "$pattern" site/ 2>/dev/null; then
+            echo "::error::Credential-shaped string found in site/; refusing to publish."
+            fail=1
+          fi
+          if ! python3 - <<'PY'
+          import re, sys, zipfile, glob
+          pats = [rb"tskey-[a-z]+-[A-Za-z0-9]{6,}", rb"gh[pousr]_[A-Za-z0-9]{20,}",
+                  rb"github_pat_[A-Za-z0-9_]{20,}", rb"BEGIN [A-Z ]*PRIVATE KEY"]
+          bad = []
+          for apk in glob.glob("site/*.apk"):
+              with zipfile.ZipFile(apk) as z:
+                  for i in z.infolist():
+                      try:
+                          d = z.read(i.filename)
+                      except Exception:
+                          continue
+                      for p in pats:
+                          if re.search(p, d):
+                              bad.append(f"{apk}!{i.filename}")
+          if bad:
+              print("secrets found inside APK: " + ", ".join(sorted(set(bad))), file=sys.stderr)
+              sys.exit(1)
+          print("APK secret scan: PASS")
+          PY
+          then
+            fail=1
+          fi
+          [ "$fail" -eq 0 ] || exit 1
 
       - name: Publish site and APK to public distribution repository
         env:
@@ -70,7 +107,7 @@ jobs:
             exit 0
           fi
 
-          git commit -m "release: publish alpha.7 appliance"
+          git commit -m "release: publish appliance (no embedded credentials)"
           git push origin main
 
       - name: Upload APK artifact
