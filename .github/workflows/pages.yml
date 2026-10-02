@@ -9,8 +9,6 @@ on:
       - "site/**"
       - ".github/workflows/pages.yml"
   workflow_dispatch:
-  issues:
-    types: [opened]
 
 permissions:
   contents: read
@@ -21,7 +19,6 @@ concurrency:
 
 jobs:
   build-and-publish:
-    if: github.event_name != 'issues' || (github.actor == 'arunramakantsingh-coder' && github.event.issue.title == 'Alpha7A BUILD NOW')
     runs-on: ubuntu-latest
 
     steps:
