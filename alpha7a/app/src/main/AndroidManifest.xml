@@ -19,5 +19,11 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <!-- Receives the result of a command that Termux ran for Alpha7A. The pending intent
+             is created by this app, so the platform delivers the broadcast with this app's
+             identity and the receiver can stay private. -->
+        <receiver
+            android:name=".CommandResultReceiver"
+            android:exported="false" />
     </application>
 </manifest>

@@ -89,6 +89,57 @@ grep -q 'DEBIAN_MIN_VERSION="${DEBIAN_MIN_VERSION:-12}"' "$SETUP" \
 grep -q 'older than the required minimum Debian' "$SETUP" \
   || { echo "FAIL: the minimum Debian version is not enforced"; exit 1; }
 
+# Debian detection must test the real precondition, not parse "proot-distro list",
+# whose output format differs between proot-distro generations.
+grep -q 'proot-distro login debian -- true' "$SETUP" \
+  || { echo "FAIL: Debian detection does not test the real precondition"; exit 1; }
+if grep -qE "proot-distro list.*grep.*debian" "$SETUP"; then
+  echo "FAIL: Debian detection still parses proot-distro list"
+  exit 1
+fi
+
+# The userspace Tailscale client must be detected, not assumed to be called "tailscale-cli".
+grep -q 'TS_BIN=' "$SETUP" \
+  || { echo "FAIL: the Tailscale client binary is not detected"; exit 1; }
+if grep -qE '(^|[^A-Za-z0-9_"-])tailscale-cli (status|up|ip)' "$SETUP"; then
+  echo "FAIL: the Tailscale client is called directly instead of via the detected binary"
+  exit 1
+fi
+grep -q 'BackendState' "$SETUP" \
+  || { echo "FAIL: the Tailscale state is not read from the structured status"; exit 1; }
+
+# A service must not be reported as running when the check only warns.
+grep -q 'die "Termux SSH is NOT listening' "$SETUP" \
+  || { echo "FAIL: a missing Termux SSH does not fail the run"; exit 1; }
+grep -q 'die "Debian SSH is NOT listening' "$SETUP" \
+  || { echo "FAIL: a missing Debian SSH does not fail the run"; exit 1; }
+
+# The local operations page must not publish credentials on every interface.
+if grep -q 'ThreadingHTTPServer(("0.0.0.0"' "$SETUP"; then
+  echo "FAIL: the operations page still binds every interface"
+  exit 1
+fi
+grep -q 'SHOW_LAB_CREDENTIALS:-false' "$SETUP" \
+  || { echo "FAIL: the operations page still shows credentials by default"; exit 1; }
+
+# The app must use Termux's documented result channel so it can report what happened.
+ALPHA_RUNNER="$ROOT/alpha7a/app/src/main/java/com/arunramakantsingh/alpha7a/TermuxRunner.java"
+ALPHA_RECEIVER="$ROOT/alpha7a/app/src/main/java/com/arunramakantsingh/alpha7a/CommandResultReceiver.java"
+[ -f "$ALPHA_RUNNER" ] || { echo "FAIL: the Termux runner is missing"; exit 1; }
+[ -f "$ALPHA_RECEIVER" ] || { echo "FAIL: the Termux result receiver is missing"; exit 1; }
+grep -q 'com.termux.RUN_COMMAND_PENDING_INTENT' "$ALPHA_RUNNER" \
+  || { echo "FAIL: the app does not request the Termux result callback"; exit 1; }
+grep -q 'com.termux.RUN_COMMAND_BACKGROUND' "$ALPHA_RUNNER" \
+  || { echo "FAIL: the app does not run Termux commands in the background"; exit 1; }
+grep -q 'CommandResultReceiver' "$ALPHA_MANIFEST" \
+  || { echo "FAIL: the manifest does not register the Termux result receiver"; exit 1; }
+
+# The app must never carry a Tailscale auth key.
+if grep -RniE 'tskey-auth-[A-Za-z0-9]{8,}' "$ROOT/alpha7a" >/dev/null 2>&1; then
+  echo "FAIL: a Tailscale auth key is committed in the Android sources"
+  exit 1
+fi
+
 # The release version must have a single source of truth and be shown on the page.
 WORKFLOW="$ROOT/.github/workflows/pages.yml"
 [ -f "$WORKFLOW" ] || { echo "FAIL: publish workflow missing"; exit 1; }

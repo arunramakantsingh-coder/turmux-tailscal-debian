@@ -42,6 +42,14 @@ jobs:
         with:
           gradle-version: "8.7"
 
+      - name: Validate repository
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq shellcheck >/dev/null
+          shellcheck --severity=error bootstrap/setup.sh bootstrap/install.sh
+          bash tests/validate.sh
+
       - name: Prepare Alpha7A provisioning payload
         env:
           TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY }}

@@ -7,7 +7,7 @@ TERMUX_SSH_PORT="${TERMUX_SSH_PORT:-8022}"
 DEBIAN_SSH_PORT="${DEBIAN_SSH_PORT:-2222}"
 DEBIAN_MIN_VERSION="${DEBIAN_MIN_VERSION:-12}"
 TAILSCALE_SOCKS5_PORT="${TAILSCALE_SOCKS5_PORT:-1055}"
-SHOW_LAB_CREDENTIALS="${SHOW_LAB_CREDENTIALS:-true}"
+SHOW_LAB_CREDENTIALS="${SHOW_LAB_CREDENTIALS:-false}"
 TS_AUTHKEY="${TS_AUTHKEY:-__ALPHA7A_TAILSCALE_AUTHKEY__}"
 APP_HOME="${HOME}/.appliance"
 STATE="$APP_HOME/state"
@@ -81,13 +81,23 @@ sleep 1
 if have ss && ss -lnt 2>/dev/null | grep -qE ":$TERMUX_SSH_PORT\b"; then
   log "Termux SSH is listening on port $TERMUX_SSH_PORT."
 else
-  warn "Termux SSH is NOT listening on port $TERMUX_SSH_PORT. Run 'sv up sshd' in Termux and check $PREFIX/var/service/sshd."
+  die "Termux SSH is NOT listening on port $TERMUX_SSH_PORT. Run 'sv up sshd' inside Termux and check $PREFIX/var/service/sshd."
 fi
 
 log "Tailscale userspace"
-if ! have tailscale-cli; then
+# The userspace client is shipped as "tailscale" by the official Termux package and as
+# "tailscale-cli" by some third party builds. Detect whichever is present.
+TS_BIN=""
+if have tailscale; then TS_BIN="tailscale"; elif have tailscale-cli; then TS_BIN="tailscale-cli"; fi
+if [ -z "$TS_BIN" ]; then
+  log "Tailscale client not found, installing the Termux package"
   curl -fsSL --retry 4 --retry-delay 2 https://raw.githubusercontent.com/bropines/tailscale-termux-cli/main/remote-install.sh | bash
+  if have tailscale; then TS_BIN="tailscale"; elif have tailscale-cli; then TS_BIN="tailscale-cli"; fi
 fi
+if [ -z "$TS_BIN" ]; then
+  die "The Tailscale client could not be installed. Install the userspace client in Termux and re-run provisioning."
+fi
+log "Using the Tailscale client: $TS_BIN"
 
 MODEL="$(getprop ro.product.model 2>/dev/null | tr ' ' '-' | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9_-')"
 MODEL="${MODEL:-android}"
@@ -100,11 +110,20 @@ mkdir -p "$HOME/.tailscale"
 printf 'TS_SOCKS5_PORT=%s\n' "$TAILSCALE_SOCKS5_PORT" > "$HOME/.tailscale/.env"
 chmod 600 "$HOME/.tailscale/.env"
 
-if have tailscaled-start; then tailscaled-start --service=on >/dev/null 2>&1 || true; fi
+if have tailscaled-start; then tailscaled-start --service=on >/dev/null 2>&1 || warn "The tailscaled daemon did not start cleanly."; fi
 sleep 3
 
 ts_up(){
-  tailscale-cli status 2>/dev/null | grep -qE '100\.[0-9]+\.[0-9]+\.[0-9]+'
+  # Prefer the structured state. Fall back to a 100.x address in the text status.
+  local state
+  state="$("$TS_BIN" status --json 2>/dev/null | grep -o '"BackendState":"[^"]*"' | head -1)"
+  if [ -n "$state" ]; then
+    case "$state" in
+      *Running*) return 0 ;;
+      *) return 1 ;;
+    esac
+  fi
+  "$TS_BIN" status 2>/dev/null | grep -qE '100\.[0-9]+\.[0-9]+\.[0-9]+'
 }
 
 if ! ts_up; then
@@ -115,7 +134,7 @@ if ! ts_up; then
   if [ -f "$AUTH_FILE" ]; then
     log "Using locally supplied Tailscale auth key"
     TS_AUTHKEY="$(cat "$AUTH_FILE")"
-    tailscale-cli up --auth-key="$TS_AUTHKEY" --hostname="$HOSTNAME"
+    "$TS_BIN" up --auth-key="$TS_AUTHKEY" --hostname="$HOSTNAME"
     unset TS_AUTHKEY
   fi
 fi
@@ -167,7 +186,10 @@ EOF
 ts_up && configure_proxy || true
 
 log "Debian via current proot-distro"
-if ! proot-distro list 2>/dev/null | grep -qE '^debian([[:space:]]|$)'; then
+# Do not rely on parsing "proot-distro list": the output format differs between proot-distro
+# generations and the entry is never at the start of the line. Test the real precondition.
+if ! proot-distro login debian -- true >/dev/null 2>&1; then
+  log "Debian is not installed yet, installing it"
   proot-distro install debian
 fi
 
@@ -233,7 +255,8 @@ cat > "$HOME/appliance-complete" <<'EOF'
 #!/data/data/com.termux/files/usr/bin/bash
 set -Eeuo pipefail
 HOSTNAME="$(cat "$HOME/.appliance/state/hostname")"
-tailscale-cli up --hostname="$HOSTNAME"
+TSBIN="$(command -v tailscale 2>/dev/null || command -v tailscale-cli 2>/dev/null || echo tailscale)"
+"$TSBIN" up --hostname="$HOSTNAME"
 SOCKS_INFO="$(tailscale-socks5 2>/dev/null || true)"
 SOCKS_USER="$(printf '%s\n' "$SOCKS_INFO" | sed -n 's/^[[:space:]]*Username[[:space:]]*:[[:space:]]*//p' | head -1)"
 SOCKS_PASS="$(printf '%s\n' "$SOCKS_INFO" | sed -n 's/^[[:space:]]*Password[[:space:]]*:[[:space:]]*//p' | head -1)"
@@ -267,7 +290,7 @@ sleep 2
 if have ss && ss -lnt 2>/dev/null | grep -qE ":$DEBIAN_SSH_PORT\b"; then
   log "Debian SSH is listening on port $DEBIAN_SSH_PORT for user $DEBIAN_USER."
 else
-  warn "Debian SSH is NOT listening on port $DEBIAN_SSH_PORT. Run '$HOME/start-debian-ssh' in Termux and check the debian-ssh tmux session."
+  die "Debian SSH is NOT listening on port $DEBIAN_SSH_PORT. Run '$HOME/start-debian-ssh' inside Termux and check the debian-ssh tmux session."
 fi
 
 log "Local details/operations page"
@@ -293,8 +316,9 @@ class H(BaseHTTPRequestHandler):
     def do_GET(self):
         e=envfile() if SHOW else {}
         host=open(HOME+"/.appliance/state/hostname").read().strip()
-        ts=sh("tailscale-cli status 2>/dev/null | head -20")
-        ip=sh("tailscale-cli ip -4 2>/dev/null | head -1")
+        tsbin=sh("command -v tailscale 2>/dev/null || command -v tailscale-cli 2>/dev/null || echo tailscale")
+        ts=sh(tsbin+" status 2>/dev/null | head -20")
+        ip=sh(tsbin+" ip -4 2>/dev/null | head -1")
         lan=sh("ip route get 1.1.1.1 2>/dev/null | sed -n 's/.*src \\([^ ]*\\).*/\\1/p'")
         creds=f"Termux: {e.get('TERMUX_USER','-')} / {e.get('TERMUX_PASSWORD','-')}\\nDebian: {e.get('DEBIAN_USER','Alpha7')} / {e.get('DEBIAN_PASSWORD','-')}" if SHOW else "Lab credentials hidden"
         body=f"""<!doctype html><meta name=viewport content="width=device-width,initial-scale=1">
@@ -320,12 +344,15 @@ jq + rsync + zip/unzip + diagnostics
 nmap + tcpdump + DNS + netcat</pre></section>"""
         b=body.encode(); self.send_response(200); self.send_header("Content-Type","text/html; charset=utf-8"); self.send_header("Content-Length",str(len(b))); self.end_headers(); self.wfile.write(b)
     def log_message(self,*a): pass
-ThreadingHTTPServer(("0.0.0.0",PORT),H).serve_forever()
+ThreadingHTTPServer((os.environ.get("APPLIANCE_WEB_BIND","127.0.0.1"),PORT),H).serve_forever()
 PY
 
 mkdir -p "$PREFIX/var/service/appliance-web"
+printf 'APPLIANCE_WEB_BIND=%s\n' "${APPLIANCE_WEB_BIND:-127.0.0.1}" > "$APP_HOME/web.env"
+chmod 600 "$APP_HOME/web.env"
 cat > "$PREFIX/var/service/appliance-web/run" <<EOF
 #!/data/data/com.termux/files/usr/bin/sh
+[ -f "$APP_HOME/web.env" ] && . "$APP_HOME/web.env"
 exec python "$HOME/appliance-web/server.py" 2>&1
 EOF
 chmod +x "$PREFIX/var/service/appliance-web/run"
@@ -335,7 +362,8 @@ cat > "$HOME/appliance-status" <<'EOF'
 #!/data/data/com.termux/files/usr/bin/bash
 echo "=== Android Development Appliance ==="
 echo "Hostname: $(cat "$HOME/.appliance/state/hostname" 2>/dev/null || hostname)"
-echo "Tailscale:"; tailscale-cli status 2>/dev/null || true
+TSBIN="$(command -v tailscale 2>/dev/null || command -v tailscale-cli 2>/dev/null || echo tailscale)"
+echo "Tailscale:"; "$TSBIN" status 2>/dev/null || true
 echo "Listening:"; ss -lnt 2>/dev/null | grep -E ':(8022|2222|8080)\b' || true
 echo "Details: http://127.0.0.1:8080"
 EOF
