@@ -72,6 +72,8 @@ def main():
         summary = re.search(r"<pre>(.*?)</pre>", html, re.S)
         if not summary or not summary.group(1).strip():
             fail("the rendered page has an empty change summary")
+        if "- - " in summary.group(1):
+            fail("the rendered change summary has doubled bullet markers")
 
     print("PASS: the distribution page renders")
 
