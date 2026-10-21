@@ -7,14 +7,14 @@ TERMUX_SSH_PORT="${TERMUX_SSH_PORT:-8022}"
 DEBIAN_SSH_PORT="${DEBIAN_SSH_PORT:-2222}"
 TAILSCALE_SOCKS5_PORT="${TAILSCALE_SOCKS5_PORT:-1055}"
 SHOW_LAB_CREDENTIALS="${SHOW_LAB_CREDENTIALS:-true}"
-TS_AUTHKEY="${TS_AUTHKEY:-__EMBEDDED_TS_AUTHKEY__}"
+TS_AUTHKEY="${TS_AUTHKEY:-}"
 APP_HOME="${HOME}/.appliance"
 STATE="$APP_HOME/state"
 LOGS="$APP_HOME/logs"
 
 mkdir -p "$STATE" "$LOGS"
 AUTH_FILE="$APP_HOME/tailscale-authkey"
-if [ ! -f "$AUTH_FILE" ] && [ "$TS_AUTHKEY" = "__EMBEDDED_TS_AUTHKEY__" ]; then
+if [ ! -f "$AUTH_FILE" ] && [ -z "$TS_AUTHKEY" ]; then
   printf '\n=== Tailscale first-run configuration ===\n'
   printf 'Enter the Tailscale auth key once. It will be stored locally with mode 600 and deleted after successful authentication.\n'
   printf 'Tag expected on the key: AuthkeyNodes\n'
