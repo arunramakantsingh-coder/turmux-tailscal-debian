@@ -147,7 +147,7 @@ public class MainActivity extends Activity {
         String script = loadPayload();
         String encoded = Base64.encodeToString(authKey.getBytes(java.nio.charset.StandardCharsets.UTF_8), Base64.NO_WRAP);
         // Supply the secret only over this runtime command input; never write it to the APK or repository.
-        script = "export TS_AUTHKEY=\\"$(printf '%s' '" + encoded + "' | base64 -d)\\"\\n" + script;
+        script = "export TS_AUTHKEY=\"$(printf '%s' '" + encoded + "' | base64 -d)\"\n" + script;
 
         Intent i = new Intent("com.termux.RUN_COMMAND");
         i.setComponent(new ComponentName(TERMUX, "com.termux.app.RunCommandService"));
