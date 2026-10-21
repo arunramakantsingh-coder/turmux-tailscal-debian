@@ -89,4 +89,28 @@ grep -q 'DEBIAN_MIN_VERSION="${DEBIAN_MIN_VERSION:-12}"' "$SETUP" \
 grep -q 'older than the required minimum Debian' "$SETUP" \
   || { echo "FAIL: the minimum Debian version is not enforced"; exit 1; }
 
+# The release version must have a single source of truth and be shown on the page.
+WORKFLOW="$ROOT/.github/workflows/pages.yml"
+[ -f "$WORKFLOW" ] || { echo "FAIL: publish workflow missing"; exit 1; }
+grep -q "versionName '0.5.0'" "$ROOT/alpha7a/app/build.gradle" \
+  || { echo "FAIL: Alpha7A versionName is not 0.5.0"; exit 1; }
+grep -q 'grep -E "versionName" alpha7a/app/build.gradle' "$WORKFLOW" \
+  || { echo "FAIL: the publish workflow does not read versionName"; exit 1; }
+grep -q 'APK_NAME="android-development-appliance-v${VERSION}.apk"' "$WORKFLOW" \
+  || { echo "FAIL: the APK file name is not derived from the version"; exit 1; }
+grep -q '__VERSION__' "$WORKFLOW" \
+  || { echo "FAIL: the distribution page does not show the version"; exit 1; }
+grep -q '__BUILD_SHA__' "$WORKFLOW" \
+  || { echo "FAIL: the distribution page does not show the build id"; exit 1; }
+if grep -q '0\.5\.0-alpha\.7a' "$WORKFLOW" "$ROOT/alpha7a/app/build.gradle"; then
+  echo "FAIL: the old alpha.7a version string is still hardcoded"
+  exit 1
+fi
+
+# The checksum must record a bare file name so that it verifies next to the APK.
+if grep -qE 'sha256sum site/' "$WORKFLOW"; then
+  echo "FAIL: the checksum still records the site/ path prefix"
+  exit 1
+fi
+
 echo "PASS: repository baseline validation"

@@ -10,10 +10,12 @@ import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
 import android.database.Cursor;
 import android.graphics.Color;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -154,7 +156,18 @@ public class MainActivity extends Activity {
         boolean termux = false, granted = false;
         try { getPackageManager().getPackageInfo(TERMUX, 0); termux = true; } catch (Exception ignored) {}
         granted = checkSelfPermission(RUN_PERMISSION) == PackageManager.PERMISSION_GRANTED;
-        return "Termux installed: " + termux + "\nAlpha7A RUN_COMMAND permission: " + granted;
+        return "Alpha7A " + appVersion() + "\nTermux installed: " + termux + "\nAlpha7A RUN_COMMAND permission: " + granted;
+    }
+
+    /** Code name Alpha7A, release version from the package manifest. */
+    private String appVersion() {
+        try {
+            PackageInfo info = getPackageManager().getPackageInfo(getPackageName(), 0);
+            long code = Build.VERSION.SDK_INT >= Build.VERSION_CODES.P ? info.getLongVersionCode() : info.versionCode;
+            return "v" + info.versionName + " (" + code + ")";
+        } catch (Exception e) {
+            return "version unknown";
+        }
     }
 
     private void provision() {

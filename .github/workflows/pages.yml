@@ -69,9 +69,19 @@ jobs:
         run: |
           set -Eeuo pipefail
           gradle -p alpha7a --no-daemon :app:assembleDebug
+          VERSION="$(grep -E "versionName" alpha7a/app/build.gradle | head -1 | sed -E "s/.*'([^']*)'.*/\1/")"
+          test -n "$VERSION" || { echo "::error::could not read versionName from alpha7a/app/build.gradle"; exit 1; }
+          APK_NAME="android-development-appliance-v${VERSION}.apk"
+          BUILD_SHA="$(git rev-parse --short HEAD)"
+          BUILD_DATE="$(date -u '+%Y-%m-%dT%H:%MZ')"
           mkdir -p site
-          cp alpha7a/app/build/outputs/apk/debug/app-debug.apk site/android-development-appliance-v0.5.0-alpha.7a.apk
-          sha256sum site/android-development-appliance-v0.5.0-alpha.7a.apk > site/android-development-appliance-v0.5.0-alpha.7a.apk.sha256
+          cp alpha7a/app/build/outputs/apk/debug/app-debug.apk "site/$APK_NAME"
+          ( cd site && sha256sum "$APK_NAME" > "$APK_NAME.sha256" )
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "APK_NAME=$APK_NAME" >> "$GITHUB_ENV"
+          echo "BUILD_SHA=$BUILD_SHA" >> "$GITHUB_ENV"
+          echo "BUILD_DATE=$BUILD_DATE" >> "$GITHUB_ENV"
+          echo "Published $APK_NAME (build $BUILD_SHA)"
 
       - name: Build private distribution page
         run: |
@@ -86,19 +96,32 @@ jobs:
           .card{background:#151c33;border:1px solid #303a60;border-radius:16px;padding:20px;margin:16px 0}
           .muted{color:#aab4d0}.btn{display:inline-block;border-radius:11px;padding:13px 18px;margin:6px 4px 6px 0;background:#4f7cff;color:white;text-decoration:none;font-weight:700}
           .ok{border-left:4px solid #45d483}.warn{border-left:4px solid #ffbd4a} code,pre{background:#080d18;border-radius:10px;padding:10px}
+          .meta{color:#aab4d0;font-size:14px}
           </style></head><body>
-          <h1>Alpha7A</h1><div class="muted">Lightweight Android Development Appliance • Model A • v0.5.0-alpha.7a</div>
-          <div class="card ok"><h2>Build available</h2><p>This is a private test build. Keep the APK and its embedded Tailscale auth key within your trusted devices.</p>
-          <a class="btn" href="./android-development-appliance-v0.5.0-alpha.7a.apk">Download Alpha7A APK</a>
-          <a class="btn" href="./android-development-appliance-v0.5.0-alpha.7a.apk.sha256">SHA-256</a></div>
+          <h1>Alpha7A</h1><div class="muted">Lightweight Android Development Appliance • Model A • v__VERSION__</div>
+          <div class="card ok"><h2>Build available</h2>
+          <p class="meta">Code name <b>Alpha7A</b> • Version <b>v__VERSION__</b> • Build <code>__BUILD_SHA__</code> • Published __BUILD_DATE__</p>
+          <p>This is a private test build. Keep the APK and its embedded Tailscale auth key within your trusted devices.</p>
+          <a class="btn" href="./__APK_NAME__">Download Alpha7A v__VERSION__ APK</a>
+          <a class="btn" href="./__APK_NAME__.sha256">SHA-256</a></div>
           <div class="card"><h2>First-time setup</h2><ol>
-          <li>Install the official Termux app from GitHub Releases or F-Droid. Do not mix Termux sources.</li>
+          <li>Install the official Termux app. Alpha7A downloads it for you: tap “1. Install official Termux” and approve the install in the Android package installer. F-Droid is an alternative source; do not mix Termux sources.</li>
           <li>Install and open Alpha7A.</li><li>Allow Termux external commands and grant Alpha7A the Termux RUN_COMMAND permission.</li>
           <li>Tap START ALPHA7A PROVISIONING. The build supplies the configured Tailscale auth key automatically.</li></ol></div>
           <div class="card"><h2>Provisioned services</h2><p>Termux tools, Tailscale userspace, unique hostname, SSH on 8022, Debian via proot-distro, Debian SSH on 2222, SOCKS5 on 1055, local operations page on 8080, Git/Git LFS/Python/build tooling and diagnostics.</p></div>
           <div class="card warn"><b>Android restriction:</b> Android still requires user confirmation to install an APK and Termux security approvals before a third-party app can run commands in Termux.</div>
           </body></html>
           HTML
+          sed -i \
+            -e "s/__VERSION__/$VERSION/g" \
+            -e "s/__BUILD_SHA__/$BUILD_SHA/g" \
+            -e "s/__BUILD_DATE__/$BUILD_DATE/g" \
+            -e "s/__APK_NAME__/$APK_NAME/g" \
+            site/index.html
+          if grep -q '__[A-Z_][A-Z_]*__' site/index.html; then
+            echo "::error::unresolved placeholder left in site/index.html"; exit 1
+          fi
+          echo "Page shows Alpha7A v$VERSION (build $BUILD_SHA)"
 
       - name: Publish site and APK to private distribution repository
         if: github.event_name != 'pull_request'
@@ -116,13 +139,13 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
           if git diff --cached --quiet; then echo "No distribution changes."; exit 0; fi
-          git commit -m "release: publish alpha.7a appliance"
+          git commit -m "release: publish Alpha7A v${VERSION} appliance"
           git push origin main
 
       - name: Upload Alpha7A APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: android-development-appliance-v0.5.0-alpha.7a
+          name: android-development-appliance-v${{ env.VERSION }}
           path: |
-            site/android-development-appliance-v0.5.0-alpha.7a.apk
-            site/android-development-appliance-v0.5.0-alpha.7a.apk.sha256
+            site/android-development-appliance-v${{ env.VERSION }}.apk
+            site/android-development-appliance-v${{ env.VERSION }}.apk.sha256
