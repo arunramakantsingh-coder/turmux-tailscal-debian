@@ -7,6 +7,7 @@
     <uses-permission android:name="com.termux.permission.RUN_COMMAND" />
     <queries>
         <package android:name="com.termux" />
+        <package android:name="com.tailscale.ipn" />
     </queries>
     <application
         android:theme="@style/AppTheme"

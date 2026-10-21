@@ -1,13 +1,30 @@
 # Copy to a local untracked configuration if desired.
 # Never commit real values.
+#
+# Alpha7A supplies these values to bootstrap/setup.sh at run time through the
+# environment. This file only exists for running the script by hand inside Termux.
 
+# Credentials. Leave empty to be prompted (only possible from a real terminal).
 TS_AUTHKEY=
 TERMUX_PASSWORD=
 DEBIAN_PASSWORD=
 
-DEBIAN_USER=Alpha7
-DEBIAN_PASSWORD=Alpha7
+# Accounts and ports.
+DEBIAN_USER=admin
 TERMUX_SSH_PORT=8022
 DEBIAN_SSH_PORT=2222
+
+# Debian rootfs. The version and the codename select a pinned Termux build.
 DEBIAN_MIN_VERSION=12
+DEBIAN_CODENAME=trixie
+PROOT_DISTRO_VERSION=v4.29.0
+
+# Tailscale. "official-app" uses the official Android app, "termux-cli" installs
+# the pinned official client inside Termux. The version and the digests belong together.
+ALPHA7A_TS_MODE=official-app
+TAILSCALE_VERSION=1.104.2
+
+# Local services.
 TAILSCALE_SOCKS5_PORT=1055
+SHOW_LAB_CREDENTIALS=false
+APPLIANCE_WEB_BIND=127.0.0.1

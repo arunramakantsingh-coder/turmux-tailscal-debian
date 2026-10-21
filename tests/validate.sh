@@ -3,6 +3,7 @@ set -Eeuo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SETUP="$ROOT/bootstrap/setup.sh"
+WORKFLOW="$ROOT/.github/workflows/pages.yml"
 
 [ -f "$SETUP" ] || { echo "FAIL: setup.sh missing"; exit 1; }
 [ -f "$ROOT/ARCHITECTURE.md" ] || { echo "FAIL: ARCHITECTURE.md missing"; exit 1; }
@@ -61,19 +62,21 @@ if grep -RniE 'tskey-(auth-)?[A-Za-z0-9]{8,}' "$ROOT/alpha7a" "$ROOT/provisioner
   exit 1
 fi
 
-# The provisioning payload must only carry the build-time marker, never a real key.
-grep -q '__ALPHA7A_TAILSCALE_AUTHKEY__' "$SETUP" \
-  || { echo "FAIL: setup.sh lost the Tailscale auth key marker"; exit 1; }
+# The provisioning payload must not carry a build-time key marker any more.
+if grep -q '__ALPHA7A_TAILSCALE_AUTHKEY__' "$SETUP"; then
+  echo "FAIL: setup.sh still carries the build-time auth key marker"
+  exit 1
+fi
 if grep -nE 'tskey-auth-[A-Za-z0-9]{8,}' "$SETUP" >/dev/null 2>&1; then
   echo "FAIL: a literal Tailscale auth key is committed in setup.sh"
   exit 1
 fi
 
-# Debian SSH must use the documented appliance credentials.
-grep -q 'DEBIAN_USER="${DEBIAN_USER:-Alpha7}"' "$SETUP" \
-  || { echo "FAIL: Debian SSH user is not Alpha7"; exit 1; }
-grep -q 'DEBIAN_PASSWORD="${DEBIAN_PASSWORD:-Alpha7}"' "$SETUP" \
-  || { echo "FAIL: Debian SSH password is not Alpha7"; exit 1; }
+# The Debian account is configured by the app. The script must carry no default password.
+grep -q 'DEBIAN_USER="${DEBIAN_USER:-admin}"' "$SETUP" \
+  || { echo "FAIL: the Debian SSH user default is not admin"; exit 1; }
+grep -q 'DEBIAN_PASSWORD="${DEBIAN_PASSWORD:-}"' "$SETUP" \
+  || { echo "FAIL: the Debian password is not supplied by the app"; exit 1; }
 
 # Termux SSH must be enabled and verified, not just attempted silently.
 grep -q 'sv-enable sshd' "$SETUP" \
@@ -98,15 +101,59 @@ if grep -qE "proot-distro list.*grep.*debian" "$SETUP"; then
   exit 1
 fi
 
-# The userspace Tailscale client must be detected, not assumed to be called "tailscale-cli".
-grep -q 'TS_BIN=' "$SETUP" \
-  || { echo "FAIL: the Tailscale client binary is not detected"; exit 1; }
-if grep -qE '(^|[^A-Za-z0-9_"-])tailscale-cli (status|up|ip)' "$SETUP"; then
-  echo "FAIL: the Tailscale client is called directly instead of via the detected binary"
+# The userspace Tailscale client must be installed from the official, pinned source.
+if grep -q 'bropines' "$SETUP"; then
+  echo "FAIL: the unpinned third-party Tailscale installer is still used"
   exit 1
 fi
+grep -q 'TAILSCALE_SHA256_ARM64="[0-9a-f]\{64\}"' "$SETUP" \
+  || { echo "FAIL: the Tailscale client is not checksum pinned"; exit 1; }
+grep -q 'TAILSCALE_SHA256_AMD64="[0-9a-f]\{64\}"' "$SETUP" \
+  || { echo "FAIL: the Tailscale client is not checksum pinned for amd64"; exit 1; }
+grep -q 'sha256sum -c' "$SETUP" \
+  || { echo "FAIL: the Tailscale client checksum is never verified"; exit 1; }
+grep -q 'userspace-networking' "$SETUP" \
+  || { echo "FAIL: the Tailscale daemon does not use userspace networking"; exit 1; }
+grep -q 'ALPHA7A_TS_MODE' "$SETUP" \
+  || { echo "FAIL: the provisioning script does not know the Tailscale mode"; exit 1; }
 grep -q 'BackendState' "$SETUP" \
   || { echo "FAIL: the Tailscale state is not read from the structured status"; exit 1; }
+
+# The Debian rootfs must be pinned instead of relying on the distro name alone.
+grep -q 'PROOT_DISTRO_VERSION' "$SETUP" \
+  || { echo "FAIL: the Debian rootfs is not pinned"; exit 1; }
+grep -q 'debian_rootfs_url' "$SETUP" \
+  || { echo "FAIL: the pinned Debian rootfs URL is not used"; exit 1; }
+
+# No reusable authentication key may be embedded in the build or in the payload.
+if grep -q '__ALPHA7A_TAILSCALE_AUTHKEY__' "$SETUP"; then
+  echo "FAIL: the provisioning payload still carries an auth key marker"
+  exit 1
+fi
+if grep -q 'TAILSCALE_AUTHKEY' "$WORKFLOW"; then
+  echo "FAIL: the build still injects a Tailscale auth key into the APK"
+  exit 1
+fi
+
+# No default password may be baked into the script.
+if grep -qE 'DEBIAN_PASSWORD="\$\{DEBIAN_PASSWORD:-[^}]' "$SETUP"; then
+  echo "FAIL: a default Debian password is still baked into the script"
+  exit 1
+fi
+if grep -qE 'TERMUX_PASSWORD="\$\{TERMUX_PASSWORD:-[^}]' "$SETUP"; then
+  echo "FAIL: a default Termux password is still baked into the script"
+  exit 1
+fi
+
+# The interactive key prompt must only run on a real terminal, never in a background run.
+grep -q '\[ -t 0 \]' "$SETUP" \
+  || { echo "FAIL: the interactive key prompt is not limited to a terminal"; exit 1; }
+
+# The operations page must read the ports from the environment, not from literals.
+if grep -qE 'Termux SSH: 8022|Debian SSH: 2222|ssh -p 8022|ssh -p 2222' "$SETUP"; then
+  echo "FAIL: the operations page still hard codes the SSH ports"
+  exit 1
+fi
 
 # A service must not be reported as running when the check only warns.
 grep -q 'die "Termux SSH is NOT listening' "$SETUP" \
@@ -134,6 +181,48 @@ grep -q 'com.termux.RUN_COMMAND_BACKGROUND' "$ALPHA_RUNNER" \
 grep -q 'CommandResultReceiver' "$ALPHA_MANIFEST" \
   || { echo "FAIL: the manifest does not register the Termux result receiver"; exit 1; }
 
+# The app must ask for the Termux command permission at run time. Without it the
+# platform rejects the intent with "Not allowed to start service ... without
+# permission com.termux.permission.RUN_COMMAND" before Termux ever sees it.
+grep -q 'requestPermissions(new String\[\]{RUN_PERMISSION}' "$ALPHA_MAIN" \
+  || { echo "FAIL: the app does not request the Termux command permission"; exit 1; }
+grep -q 'onRequestPermissionsResult' "$ALPHA_MAIN" \
+  || { echo "FAIL: the app does not handle the permission result"; exit 1; }
+grep -q 'canRequestPackageInstalls' "$ALPHA_MAIN" \
+  || { echo "FAIL: the app does not check the installer permission"; exit 1; }
+
+# The app must offer both Tailscale modes and detect the official app.
+grep -q 'TailscaleMode\.' "$ALPHA_MAIN" \
+  || { echo "FAIL: the app has no Tailscale mode selector"; exit 1; }
+grep -q '"com.tailscale.ipn"' "$ALPHA_MAIN" \
+  || { echo "FAIL: the app does not detect the official Tailscale app"; exit 1; }
+grep -q 'com.tailscale.ipn' "$ALPHA_MANIFEST" \
+  || { echo "FAIL: the manifest does not declare package visibility for the Tailscale app"; exit 1; }
+
+# The SSH configuration lives in the app, so no port may be hard coded there.
+if grep -qE '8022|2222' "$ALPHA_MAIN"; then
+  echo "FAIL: the app still hard codes an SSH port"
+  exit 1
+fi
+grep -q 'KEY_TERMUX_PORT' "$ALPHA_MAIN" \
+  || { echo "FAIL: the app does not store the Termux SSH port"; exit 1; }
+grep -q 'KEY_DEBIAN_PORT' "$ALPHA_MAIN" \
+  || { echo "FAIL: the app does not store the Debian SSH port"; exit 1; }
+grep -q 'KEY_DEBIAN_USER' "$ALPHA_MAIN" \
+  || { echo "FAIL: the app does not store the Debian user"; exit 1; }
+grep -q 'KEY_DEBIAN_PASSWORD' "$ALPHA_MAIN" \
+  || { echo "FAIL: the app does not store the Debian password"; exit 1; }
+
+# The published release must be traceable to its source commit and workflow run.
+grep -q '> site/release.json <<EOF' "$WORKFLOW" \
+  || { echo "FAIL: the workflow does not publish release metadata"; exit 1; }
+grep -q 'GITHUB_RUN_ID' "$WORKFLOW" \
+  || { echo "FAIL: the published metadata does not record the workflow run"; exit 1; }
+grep -q 'GITHUB_SHA' "$WORKFLOW" \
+  || { echo "FAIL: the published metadata does not record the source commit"; exit 1; }
+grep -q 'versionCode' "$WORKFLOW" \
+  || { echo "FAIL: the published metadata does not record the version code"; exit 1; }
+
 # The app must never carry a Tailscale auth key.
 if grep -RniE 'tskey-auth-[A-Za-z0-9]{8,}' "$ROOT/alpha7a" >/dev/null 2>&1; then
   echo "FAIL: a Tailscale auth key is committed in the Android sources"
@@ -141,7 +230,6 @@ if grep -RniE 'tskey-auth-[A-Za-z0-9]{8,}' "$ROOT/alpha7a" >/dev/null 2>&1; then
 fi
 
 # The release version must have a single source of truth and be shown on the page.
-WORKFLOW="$ROOT/.github/workflows/pages.yml"
 [ -f "$WORKFLOW" ] || { echo "FAIL: publish workflow missing"; exit 1; }
 grep -q "versionName '0.5.0'" "$ROOT/alpha7a/app/build.gradle" \
   || { echo "FAIL: Alpha7A versionName is not 0.5.0"; exit 1; }

@@ -7,6 +7,7 @@ on:
       - "bootstrap/**"
       - "alpha7a/**"
       - "site/**"
+      - "CHANGELOG.md"
       - ".github/workflows/pages.yml"
   pull_request:
     branches: [main]
@@ -19,12 +20,17 @@ concurrency:
   group: alpha7a-build
   cancel-in-progress: true
 
+env:
+  DISTRIBUTION_REPO: arunramakantsingh-coder/turmux-tailscal-debian-download
+
 jobs:
   build-and-publish:
     runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Java 17
         uses: actions/setup-java@v4
@@ -51,49 +57,84 @@ jobs:
           bash tests/validate.sh
 
       - name: Prepare Alpha7A provisioning payload
-        env:
-          TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY }}
         run: |
           set -Eeuo pipefail
-          test -n "$TAILSCALE_AUTHKEY" || { echo "::error::TAILSCALE_AUTHKEY secret is missing"; exit 1; }
-          case "$TAILSCALE_AUTHKEY" in
-            tskey-auth-*) ;;
-            *) echo "::error::TAILSCALE_AUTHKEY does not look like a Tailscale auth key"; exit 1 ;;
-          esac
           mkdir -p alpha7a/app/src/main/assets
-          python3 - <<'PY'
-          import os
-          from pathlib import Path
-          source = Path("bootstrap/setup.sh").read_text()
-          marker = "__ALPHA7A_TAILSCALE_AUTHKEY__"
-          key = os.environ["TAILSCALE_AUTHKEY"]
-          if marker not in source:
-              raise SystemExit("Expected auth-key marker missing from bootstrap/setup.sh")
-          Path("alpha7a/app/src/main/assets/setup.sh").write_text(source.replace(marker, key))
-          print("Provisioning payload prepared with the GitHub Actions secret.")
-          PY
+          cp bootstrap/setup.sh alpha7a/app/src/main/assets/setup.sh
+          # The payload is shipped in a public APK, so it must never carry a secret.
+          if grep -qE 'tskey-auth-[A-Za-z0-9]{8,}' alpha7a/app/src/main/assets/setup.sh; then
+            echo "::error::the provisioning payload contains a Tailscale auth key"
+            exit 1
+          fi
+          echo "Provisioning payload prepared without any secret."
 
       - name: Build Alpha7A APK
         run: |
           set -Eeuo pipefail
           gradle -p alpha7a --no-daemon :app:assembleDebug
           VERSION="$(grep -E "versionName" alpha7a/app/build.gradle | head -1 | sed -E "s/.*'([^']*)'.*/\1/")"
+          VERSION_CODE="$(grep -E "versionCode" alpha7a/app/build.gradle | head -1 | sed -E "s/.*versionCode[[:space:]]+([0-9]+).*/\1/")"
           test -n "$VERSION" || { echo "::error::could not read versionName from alpha7a/app/build.gradle"; exit 1; }
+          test -n "$VERSION_CODE" || { echo "::error::could not read versionCode from alpha7a/app/build.gradle"; exit 1; }
           APK_NAME="android-development-appliance-v${VERSION}.apk"
           BUILD_SHA="$(git rev-parse --short HEAD)"
           BUILD_DATE="$(date -u '+%Y-%m-%dT%H:%MZ')"
           mkdir -p site
           cp alpha7a/app/build/outputs/apk/debug/app-debug.apk "site/$APK_NAME"
           ( cd site && sha256sum "$APK_NAME" > "$APK_NAME.sha256" )
+          APK_SHA256="$(cut -d' ' -f1 < "site/$APK_NAME.sha256")"
+
+          # The version code must always increase, so a published build is never replaced
+          # by an older one.
+          PUBLISHED_VERSION_CODE="$(curl -fsSL "https://raw.githubusercontent.com/${DISTRIBUTION_REPO}/main/release.json" 2>/dev/null \
+            | grep -o '"versionCode"[[:space:]]*:[[:space:]]*[0-9]*' | grep -o '[0-9]*' || true)"
+          PUBLISHED_VERSION_CODE="${PUBLISHED_VERSION_CODE:-0}"
+          if [ "$VERSION_CODE" -le "$PUBLISHED_VERSION_CODE" ]; then
+            echo "::error::versionCode $VERSION_CODE must be higher than the published $PUBLISHED_VERSION_CODE"
+            exit 1
+          fi
+
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "VERSION_CODE=$VERSION_CODE" >> "$GITHUB_ENV"
           echo "APK_NAME=$APK_NAME" >> "$GITHUB_ENV"
+          echo "APK_SHA256=$APK_SHA256" >> "$GITHUB_ENV"
           echo "BUILD_SHA=$BUILD_SHA" >> "$GITHUB_ENV"
           echo "BUILD_DATE=$BUILD_DATE" >> "$GITHUB_ENV"
-          echo "Published $APK_NAME (build $BUILD_SHA)"
+          echo "Built $APK_NAME (versionCode $VERSION_CODE, build $BUILD_SHA)"
+
+      - name: Write release metadata
+        run: |
+          set -Eeuo pipefail
+          CHANGELOG=""
+          if [ -f CHANGELOG.md ]; then
+            CHANGELOG="$(awk 'BEGIN{s=0} /^## /{s++; next} s==1{print} s>=2{exit}' CHANGELOG.md)"
+          fi
+          CHANGELOG_JSON="$(printf '%s' "$CHANGELOG" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')"
+          cat > site/release.json <<EOF
+          {
+            "versionName": "$VERSION",
+            "versionCode": $VERSION_CODE,
+            "sourceCommit": "$GITHUB_SHA",
+            "sourceCommitShort": "$BUILD_SHA",
+            "buildTimestampUtc": "$BUILD_DATE",
+            "workflowRun": "$GITHUB_RUN_ID",
+            "workflowUrl": "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID",
+            "apkFileName": "$APK_NAME",
+            "sha256": "$APK_SHA256",
+            "changeSummary": $CHANGELOG_JSON
+          }
+          EOF
+          python3 -c 'import json;json.load(open("site/release.json"))' || { echo "::error::release.json is not valid JSON"; exit 1; }
+          echo "Release metadata written."
 
       - name: Build private distribution page
         run: |
           set -Eeuo pipefail
+          CHANGELOG=""
+          if [ -f CHANGELOG.md ]; then
+            CHANGELOG="$(awk 'BEGIN{s=0} /^## /{s++; next} s==1{print} s>=2{exit}' CHANGELOG.md)"
+          fi
+          CHANGELOG_HTML="$(printf '%s' "$CHANGELOG" | sed -e 's/^/- /' -e 's/[&|\\]/\\&/g')"
           cat > site/index.html <<'HTML'
           <!doctype html>
           <html lang="en">
@@ -108,23 +149,31 @@ jobs:
           </style></head><body>
           <h1>Alpha7A</h1><div class="muted">Lightweight Android Development Appliance • Model A • v__VERSION__</div>
           <div class="card ok"><h2>Build available</h2>
-          <p class="meta">Code name <b>Alpha7A</b> • Version <b>v__VERSION__</b> • Build <code>__BUILD_SHA__</code> • Published __BUILD_DATE__</p>
-          <p>This is a private test build. Keep the APK and its embedded Tailscale auth key within your trusted devices.</p>
+          <p class="meta">Code name <b>Alpha7A</b> • Version <b>v__VERSION__</b> (versionCode __VERSION_CODE__) • Build <code>__BUILD_SHA__</code> • Published __BUILD_DATE__</p>
+          <p class="meta">Source commit <code>__SOURCE_COMMIT__</code> • Workflow run <code>__RUN_ID__</code></p>
+          <p>This is a private test build. No Tailscale auth key is embedded in it: paste the key in the app when you need one.</p>
           <a class="btn" href="./__APK_NAME__">Download Alpha7A v__VERSION__ APK</a>
-          <a class="btn" href="./__APK_NAME__.sha256">SHA-256</a></div>
+          <a class="btn" href="./__APK_NAME__.sha256">SHA-256</a>
+          <a class="btn" href="./release.json">Release metadata</a></div>
+          <div class="card"><h2>What changed</h2>
+          <pre>__CHANGELOG__</pre></div>
           <div class="card"><h2>First-time setup</h2><ol>
-          <li>Install the official Termux app. Alpha7A downloads it for you: tap “1. Install official Termux” and approve the install in the Android package installer. F-Droid is an alternative source; do not mix Termux sources.</li>
+          <li>Install the official Termux app. Alpha7A downloads it for you: tap “Install official Termux” and approve the install in the Android package installer. F-Droid is an alternative source; do not mix Termux sources.</li>
           <li>Install and open Alpha7A.</li><li>Allow Termux external commands and grant Alpha7A the Termux RUN_COMMAND permission.</li>
-          <li>Tap START ALPHA7A PROVISIONING. The build supplies the configured Tailscale auth key automatically.</li></ol></div>
-          <div class="card"><h2>Provisioned services</h2><p>Termux tools, Tailscale userspace, unique hostname, SSH on 8022, Debian via proot-distro, Debian SSH on 2222, SOCKS5 on 1055, local operations page on 8080, Git/Git LFS/Python/build tooling and diagnostics.</p></div>
-          <div class="card warn"><b>Android restriction:</b> Android still requires user confirmation to install an APK and Termux security approvals before a third-party app can run commands in Termux.</div>
+          <li>Tap START PROVISIONING. Alpha7A runs the whole setup inside Termux and shows the progress and the result.</li></ol></div>
+          <div class="card"><h2>Provisioned services</h2><p>Termux tools, Tailscale (official app or the CLI in Termux), unique hostname, Termux SSH, Debian via proot-distro, Debian SSH, SOCKS5, local operations page, Git/Git LFS/Python/build tooling and diagnostics. The ports and accounts are set in the app.</p></div>
+          <div class="card warn"><b>Android restriction:</b> Android still requires user confirmation to install an APK, and Termux requires the user to allow external apps to run commands.</div>
           </body></html>
           HTML
           sed -i \
             -e "s/__VERSION__/$VERSION/g" \
+            -e "s/__VERSION_CODE__/$VERSION_CODE/g" \
             -e "s/__BUILD_SHA__/$BUILD_SHA/g" \
             -e "s/__BUILD_DATE__/$BUILD_DATE/g" \
             -e "s/__APK_NAME__/$APK_NAME/g" \
+            -e "s/__SOURCE_COMMIT__/$GITHUB_SHA/g" \
+            -e "s/__RUN_ID__/$GITHUB_RUN_ID/g" \
+            -e "s|__CHANGELOG__|$CHANGELOG_HTML|g" \
             site/index.html
           if grep -q '__[A-Z_][A-Z_]*__' site/index.html; then
             echo "::error::unresolved placeholder left in site/index.html"; exit 1
@@ -139,7 +188,7 @@ jobs:
           set -Eeuo pipefail
           test -n "$DISTRIBUTION_TOKEN"
           rm -rf distribution
-          git clone "https://x-access-token:${DISTRIBUTION_TOKEN}@github.com/arunramakantsingh-coder/turmux-tailscal-debian-download.git" distribution
+          git clone "https://x-access-token:${DISTRIBUTION_TOKEN}@github.com/${DISTRIBUTION_REPO}.git" distribution
           find distribution -mindepth 1 -maxdepth 1 ! -name .git ! -name .github -exec rm -rf {} +
           cp -a site/. distribution/
           cd distribution
@@ -147,7 +196,7 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
           if git diff --cached --quiet; then echo "No distribution changes."; exit 0; fi
-          git commit -m "release: publish Alpha7A v${VERSION} appliance"
+          git commit -m "release: Alpha7A v${VERSION} (versionCode ${VERSION_CODE}) from ${GITHUB_SHA} run ${GITHUB_RUN_ID}"
           git push origin main
 
       - name: Upload Alpha7A APK artifact
@@ -157,3 +206,4 @@ jobs:
           path: |
             site/android-development-appliance-v${{ env.VERSION }}.apk
             site/android-development-appliance-v${{ env.VERSION }}.apk.sha256
+            site/release.json

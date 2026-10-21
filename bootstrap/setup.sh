@@ -1,36 +1,44 @@
 #!/data/data/com.termux/files/usr/bin/bash
+# Alpha7A appliance provisioning.
+#
+# Every credential and every port is supplied by the Alpha7A app through the environment.
+# This script never carries a default password and never embeds an authentication key.
 set -Eeuo pipefail
 umask 077
 
-DEBIAN_USER="${DEBIAN_USER:-Alpha7}"
+# ---------------------------------------------------------------- configuration
+STAGE="${ALPHA7A_STAGE:-provision}"
+TS_MODE="${ALPHA7A_TS_MODE:-official-app}"
+
+DEBIAN_USER="${DEBIAN_USER:-admin}"
 TERMUX_SSH_PORT="${TERMUX_SSH_PORT:-8022}"
 DEBIAN_SSH_PORT="${DEBIAN_SSH_PORT:-2222}"
 DEBIAN_MIN_VERSION="${DEBIAN_MIN_VERSION:-12}"
+DEBIAN_CODENAME="${DEBIAN_CODENAME:-trixie}"
+PROOT_DISTRO_VERSION="${PROOT_DISTRO_VERSION:-v4.29.0}"
 TAILSCALE_SOCKS5_PORT="${TAILSCALE_SOCKS5_PORT:-1055}"
 SHOW_LAB_CREDENTIALS="${SHOW_LAB_CREDENTIALS:-false}"
-TS_AUTHKEY="${TS_AUTHKEY:-__ALPHA7A_TAILSCALE_AUTHKEY__}"
-APP_HOME="${HOME}/.appliance"
+
+# Credentials come from the app. An empty value means "not supplied".
+TS_AUTHKEY="${TS_AUTHKEY:-}"
+TERMUX_PASSWORD="${TERMUX_PASSWORD:-}"
+DEBIAN_PASSWORD="${DEBIAN_PASSWORD:-}"
+
+# The Tailscale client is pinned. The version and the two digests belong together.
+TAILSCALE_VERSION="${TAILSCALE_VERSION:-1.104.2}"
+TAILSCALE_SHA256_ARM64="5776aaa901b5ef1916e66be5bb54b9f481cd399c9c28db123a8cab620efa237b"
+TAILSCALE_SHA256_AMD64="512f613ed7d04fc7282f7dc5bd76aa105aae28168fbb9357eb749ebcbc29f0ae"
+
+APP_HOME="$HOME/.appliance"
 STATE="$APP_HOME/state"
 LOGS="$APP_HOME/logs"
+AUTH_FILE="$APP_HOME/tailscale-authkey"
+ENV_FILE="$APP_HOME/appliance.env"
+TS_DIR="$APP_HOME/tailscale"
+TS_SOCKET="$TS_DIR/tailscaled.sock"
+TS_STATE="$TS_DIR/state"
 
 mkdir -p "$STATE" "$LOGS"
-AUTH_FILE="$APP_HOME/tailscale-authkey"
-if [ ! -f "$AUTH_FILE" ] && [ -z "$TS_AUTHKEY" ]; then
-  printf '\n=== Tailscale first-run configuration ===\n'
-  printf 'Enter the Tailscale auth key once. It will be stored locally with mode 600 and deleted after successful authentication.\n'
-  printf 'Tag expected on the key: AuthkeyNodes\n'
-  while :; do
-    read -r -s -p 'Tailscale Auth Key: ' TS_INPUT
-    printf '\n'
-    if [[ "$TS_INPUT" == tskey-auth-* ]]; then
-      printf '%s' "$TS_INPUT" > "$AUTH_FILE"
-      chmod 600 "$AUTH_FILE"
-      unset TS_INPUT
-      break
-    fi
-    printf '[ERROR] That does not look like a Tailscale auth key. Please try again.\n'
-  done
-fi
 exec > >(tee -a "$LOGS/provisioning.log") 2>&1
 
 log(){ printf '\n[+] %s\n' "$*"; }
@@ -38,185 +46,301 @@ warn(){ printf '\n[!] %s\n' "$*" >&2; }
 die(){ printf '\n[ERROR] %s\n' "$*" >&2; exit 1; }
 have(){ command -v "$1" >/dev/null 2>&1; }
 
-random_secret(){ tr -dc 'A-Za-z0-9' </dev/urandom | head -c 20; }
+# ---------------------------------------------------------------- stage markers
+stage_needed(){ [ ! -f "$STATE/$1.done" ]; }
+stage_done(){ printf '%s\n' "${2:-}" > "$STATE/$1.done"; }
 
-have pkg || die "Run this from the appliance terminal."
+# ---------------------------------------------------------------- credentials
+require_debian_password(){
+  [ -n "$DEBIAN_PASSWORD" ] || die "No Debian password was supplied. Set it in the Alpha7A SSH configuration and run provisioning again."
+}
 
-if [ ! -f "$APP_HOME/credentials.env" ]; then
-  TERMUX_PASSWORD="${TERMUX_PASSWORD:-$(random_secret)}"
-  DEBIAN_PASSWORD="${DEBIAN_PASSWORD:-Alpha7}"
-  cat > "$APP_HOME/credentials.env" <<EOF
-TERMUX_USER=$(id -un)
-TERMUX_PASSWORD=$TERMUX_PASSWORD
+# The auth key may be supplied by the app, or staged by the user in Termux.
+load_auth_key(){
+  if [ -n "$TS_AUTHKEY" ]; then
+    printf '%s' "$TS_AUTHKEY" > "$AUTH_FILE"
+    chmod 600 "$AUTH_FILE"
+    return 0
+  fi
+  if [ -f "$AUTH_FILE" ]; then
+    TS_AUTHKEY="$(cat "$AUTH_FILE")"
+    return 0
+  fi
+  # Only a real terminal can ask for a key. A background run must not consume its own input.
+  if [ -t 0 ]; then
+    printf '\n=== Tailscale first-run configuration ===\n'
+    printf 'Enter the Tailscale auth key once. It is stored locally with mode 600 and deleted after authentication.\n'
+    printf 'Tag expected on the key: AuthkeyNodes\n'
+    while :; do
+      read -r -s -p 'Tailscale Auth Key: ' TS_INPUT
+      printf '\n'
+      if [[ "$TS_INPUT" == tskey-auth-* ]]; then
+        printf '%s' "$TS_INPUT" > "$AUTH_FILE"
+        chmod 600 "$AUTH_FILE"
+        unset TS_INPUT
+        break
+      fi
+      printf '[ERROR] That does not look like a Tailscale auth key. Please try again.\n'
+    done
+    TS_AUTHKEY="$(cat "$AUTH_FILE")"
+    return 0
+  fi
+  return 1
+}
+
+# ---------------------------------------------------------------- environment file
+write_appliance_env(){
+  umask 077
+  cat > "$ENV_FILE" <<EOF
+TERMUX_SSH_PORT=$TERMUX_SSH_PORT
+DEBIAN_SSH_PORT=$DEBIAN_SSH_PORT
 DEBIAN_USER=$DEBIAN_USER
-DEBIAN_PASSWORD=$DEBIAN_PASSWORD
+TERMUX_SSH_USER=$(id -un 2>/dev/null || echo termux)
+APPLIANCE_WEB_BIND=${APPLIANCE_WEB_BIND:-127.0.0.1}
+APPLIANCE_WEB_PORT=8080
+SHOW_LAB_CREDENTIALS=$SHOW_LAB_CREDENTIALS
 EOF
-  chmod 600 "$APP_HOME/credentials.env"
-else
-  . "$APP_HOME/credentials.env"
-fi
+  chmod 600 "$ENV_FILE"
+}
 
-log "Termux baseline"
-pkg update -y
-pkg install -y openssh proot-distro curl wget git git-lfs jq unzip zip rsync python tmux termux-services iproute2 net-tools qrencode proxychains-ng dnsutils nmap tcpdump netcat-openbsd
+# ---------------------------------------------------------------- Termux packages
+ensure_termux_packages(){
+  if stage_needed termux-packages; then
+    log "Termux baseline"
+    pkg update -y
+    pkg install -y openssh proot proot-distro curl wget git git-lfs jq unzip zip rsync python tmux termux-services iproute2 net-tools qrencode proxychains-ng dnsutils nmap tcpdump netcat-openbsd
+    stage_done termux-packages
+  else
+    log "Termux packages already installed"
+  fi
+}
 
-log "Termux SSH :$TERMUX_SSH_PORT"
-mkdir -p "$PREFIX/var/empty"; chmod 700 "$PREFIX/var/empty"
-ssh-keygen -A >/dev/null 2>&1 || true
-printf '%s\n%s\n' "$TERMUX_PASSWORD" "$TERMUX_PASSWORD" | passwd >/dev/null 2>&1 || true
-if grep -qE '^[#[:space:]]*Port[[:space:]]+' "$PREFIX/etc/ssh/sshd_config" 2>/dev/null; then
-  sed -i -E "s/^[#[:space:]]*Port[[:space:]]+.*/Port $TERMUX_SSH_PORT/" "$PREFIX/etc/ssh/sshd_config"
-else
-  printf '\nPort %s\n' "$TERMUX_SSH_PORT" >> "$PREFIX/etc/ssh/sshd_config"
-fi
-if have sv-enable && [ -d "$PREFIX/var/service/sshd" ]; then
-  sv-enable sshd >/dev/null 2>&1 || warn "Could not enable the sshd service."
-  sv up sshd >/dev/null 2>&1 || warn "Could not start sshd through termux-services."
-else
-  warn "termux-services is not available for sshd; starting sshd directly."
-  pkill sshd 2>/dev/null || true
-  sshd || warn "Could not start the Termux sshd daemon."
-fi
-sleep 1
-if have ss && ss -lnt 2>/dev/null | grep -qE ":$TERMUX_SSH_PORT\b"; then
-  log "Termux SSH is listening on port $TERMUX_SSH_PORT."
-else
-  die "Termux SSH is NOT listening on port $TERMUX_SSH_PORT. Run 'sv up sshd' inside Termux and check $PREFIX/var/service/sshd."
-fi
+# ---------------------------------------------------------------- Termux SSH
+configure_termux_ssh(){
+  if stage_needed termux-ssh; then
+    log "Termux SSH on port $TERMUX_SSH_PORT"
+    mkdir -p "$PREFIX/var/empty"; chmod 700 "$PREFIX/var/empty"
+    ssh-keygen -A >/dev/null 2>&1 || true
+    if [ -n "$TERMUX_PASSWORD" ]; then
+      printf '%s\n%s\n' "$TERMUX_PASSWORD" "$TERMUX_PASSWORD" | passwd >/dev/null 2>&1 \
+        || warn "Could not set the Termux account password."
+    else
+      warn "No Termux password was supplied, so the Termux account password was left unchanged."
+    fi
+    if grep -qE '^[#[:space:]]*Port[[:space:]]+' "$PREFIX/etc/ssh/sshd_config" 2>/dev/null; then
+      sed -i -E "s/^[#[:space:]]*Port[[:space:]]+.*/Port $TERMUX_SSH_PORT/" "$PREFIX/etc/ssh/sshd_config"
+    else
+      printf '\nPort %s\n' "$TERMUX_SSH_PORT" >> "$PREFIX/etc/ssh/sshd_config"
+    fi
+    if have sv-enable && [ -d "$PREFIX/var/service/sshd" ]; then
+      sv-enable sshd >/dev/null 2>&1 || warn "Could not enable the sshd service."
+      sv up sshd >/dev/null 2>&1 || warn "Could not start sshd through termux-services."
+    else
+      warn "termux-services is not available for sshd; starting sshd directly."
+      pkill sshd 2>/dev/null || true
+      sshd || warn "Could not start the Termux sshd daemon."
+    fi
+    stage_done termux-ssh
+  else
+    log "Termux SSH already configured"
+  fi
+  sleep 1
+  if have ss && ss -lnt 2>/dev/null | grep -qE ":$TERMUX_SSH_PORT\b"; then
+    log "Termux SSH is listening on port $TERMUX_SSH_PORT."
+  else
+    die "Termux SSH is NOT listening on port $TERMUX_SSH_PORT. Run 'sv up sshd' inside Termux and check $PREFIX/var/service/sshd."
+  fi
+}
 
-log "Tailscale userspace"
-# The userspace client is shipped as "tailscale" by the official Termux package and as
-# "tailscale-cli" by some third party builds. Detect whichever is present.
-TS_BIN=""
-if have tailscale; then TS_BIN="tailscale"; elif have tailscale-cli; then TS_BIN="tailscale-cli"; fi
-if [ -z "$TS_BIN" ]; then
-  log "Tailscale client not found, installing the Termux package"
-  curl -fsSL --retry 4 --retry-delay 2 https://raw.githubusercontent.com/bropines/tailscale-termux-cli/main/remote-install.sh | bash
-  if have tailscale; then TS_BIN="tailscale"; elif have tailscale-cli; then TS_BIN="tailscale-cli"; fi
-fi
-if [ -z "$TS_BIN" ]; then
-  die "The Tailscale client could not be installed. Install the userspace client in Termux and re-run provisioning."
-fi
-log "Using the Tailscale client: $TS_BIN"
+# ---------------------------------------------------------------- Tailscale
+ts_arch(){
+  case "$(uname -m)" in
+    aarch64) printf 'arm64' ;;
+    x86_64) printf 'amd64' ;;
+    *) printf '' ;;
+  esac
+}
 
-MODEL="$(getprop ro.product.model 2>/dev/null | tr ' ' '-' | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9_-')"
-MODEL="${MODEL:-android}"
-if [ ! -f "$STATE/hostname" ]; then
-  printf '%s-%s\n' "$MODEL" "$(tr -dc 'a-z0-9' </dev/urandom | head -c 4)" > "$STATE/hostname"
-fi
-HOSTNAME="$(cat "$STATE/hostname")"
+install_tailscale_cli(){
+  local arch tarball url expected dir
+  arch="$(ts_arch)"
+  [ -n "$arch" ] || die "The Tailscale client is not published for this architecture ($(uname -m)). Use the official Tailscale app instead."
+  if [ "$arch" = "arm64" ]; then expected="$TAILSCALE_SHA256_ARM64"; else expected="$TAILSCALE_SHA256_AMD64"; fi
+  tarball="tailscale_${TAILSCALE_VERSION}_${arch}.tgz"
+  url="https://pkgs.tailscale.com/stable/${tarball}"
+  dir="$TS_DIR/${tarball%.tgz}"
 
-mkdir -p "$HOME/.tailscale"
-printf 'TS_SOCKS5_PORT=%s\n' "$TAILSCALE_SOCKS5_PORT" > "$HOME/.tailscale/.env"
-chmod 600 "$HOME/.tailscale/.env"
+  log "Installing the official Tailscale client $TAILSCALE_VERSION ($arch)"
+  mkdir -p "$TS_DIR" "$PREFIX/bin"
+  if [ ! -f "$TS_DIR/$tarball" ]; then
+    curl -fsSL --retry 4 --retry-delay 3 -o "$TS_DIR/$tarball" "$url" \
+      || die "Could not download $url"
+  fi
+  printf '%s  %s\n' "$expected" "$TS_DIR/$tarball" | sha256sum -c - >/dev/null 2>&1 \
+    || die "The checksum of the Tailscale client does not match the pinned value. Refusing to install it."
+  log "Checksum verified"
+  rm -rf "$dir"
+  tar xzf "$TS_DIR/$tarball" -C "$TS_DIR"
+  install -m 0755 "$dir/tailscale" "$PREFIX/bin/tailscale"
+  install -m 0755 "$dir/tailscaled" "$PREFIX/bin/tailscaled"
+  stage_done tailscale-client
+}
 
-if have tailscaled-start; then tailscaled-start --service=on >/dev/null 2>&1 || warn "The tailscaled daemon did not start cleanly."; fi
-sleep 3
+start_tailscaled(){
+  local run_dir="$PREFIX/var/service/tailscaled"
+  mkdir -p "$run_dir" "$TS_DIR"
+  cat > "$run_dir/run" <<EOF
+#!/data/data/com.termux/files/usr/bin/sh
+exec $PREFIX/bin/tailscaled --tun=userspace-networking --state=$TS_STATE --socket=$TS_SOCKET
+EOF
+  chmod 700 "$run_dir/run"
+  if have sv-enable; then
+    sv-enable tailscaled >/dev/null 2>&1 || warn "Could not enable the tailscaled service."
+    sv up tailscaled >/dev/null 2>&1 || warn "Could not start tailscaled."
+  else
+    nohup "$PREFIX/bin/tailscaled" --tun=userspace-networking --state="$TS_STATE" --socket="$TS_SOCKET" >/dev/null 2>&1 &
+  fi
+  sleep 3
+}
+
+ts_cli(){ "$PREFIX/bin/tailscale" --socket="$TS_SOCKET" "$@"; }
 
 ts_up(){
-  # Prefer the structured state. Fall back to a 100.x address in the text status.
   local state
-  state="$("$TS_BIN" status --json 2>/dev/null | grep -o '"BackendState":"[^"]*"' | head -1)"
+  state="$(ts_cli status --json 2>/dev/null | grep -o '"BackendState":"[^"]*"' | head -1)"
   if [ -n "$state" ]; then
     case "$state" in
       *Running*) return 0 ;;
       *) return 1 ;;
     esac
   fi
-  "$TS_BIN" status 2>/dev/null | grep -qE '100\.[0-9]+\.[0-9]+\.[0-9]+'
+  ts_cli status 2>/dev/null | grep -qE '100\.[0-9]+\.[0-9]+\.[0-9]+'
 }
 
-if ! ts_up; then
-  if [ -n "${TS_AUTHKEY:-}" ]; then
-    printf '%s' "$TS_AUTHKEY" > "$AUTH_FILE"
-    chmod 600 "$AUTH_FILE"
+ensure_tailscale(){
+  if [ "$TS_MODE" != "termux-cli" ]; then
+    log "Tailscale is provided by the official app; nothing to install or configure here."
+    return 0
   fi
-  if [ -f "$AUTH_FILE" ]; then
-    log "Using locally supplied Tailscale auth key"
-    TS_AUTHKEY="$(cat "$AUTH_FILE")"
-    "$TS_BIN" up --auth-key="$TS_AUTHKEY" --hostname="$HOSTNAME"
+  if stage_needed tailscale-client; then
+    install_tailscale_cli
+  else
+    log "Tailscale client already installed"
+  fi
+  if ! pgrep -x tailscaled >/dev/null 2>&1; then
+    start_tailscaled
+  fi
+  if ! ts_up; then
+    if ! load_auth_key; then
+      die "No Tailscale auth key was supplied. Paste one in the Alpha7A app, or stage it at $AUTH_FILE inside Termux."
+    fi
+    log "Authenticating with the supplied Tailscale auth key"
+    ts_cli up --auth-key="$TS_AUTHKEY" --hostname="$(cat "$STATE/hostname" 2>/dev/null || echo alpha7a)" || true
     unset TS_AUTHKEY
   fi
-fi
+  if ts_up; then
+    printf 'authenticated=true\n' > "$STATE/tailscale.env"
+    rm -f "$AUTH_FILE"
+    log "Tailscale is connected"
+  else
+    printf 'authenticated=false\n' > "$STATE/tailscale.env"
+    die "Tailscale authentication failed. Check the auth key and ensure it is tagged AuthkeyNodes."
+  fi
+}
 
-if ! ts_up; then
-  die "Tailscale authentication failed. Check the auth key and ensure it is tagged AuthkeyNodes."
-fi
-
-rm -f "$AUTH_FILE"
-
-
-if ts_up; then
-  printf 'authenticated=true\n' > "$STATE/tailscale.env"
-else
-  printf 'authenticated=false\n' > "$STATE/tailscale.env"
-  warn "Tailscale authentication still pending."
-fi
-
-SOCKS_USER=""
-SOCKS_PASS=""
 configure_proxy(){
-  local info
-  info="$(tailscale-socks5 2>/dev/null || true)"
-  SOCKS_USER="$(printf '%s\n' "$info" | sed -n 's/^[[:space:]]*Username[[:space:]]*:[[:space:]]*//p' | head -1)"
-  SOCKS_PASS="$(printf '%s\n' "$info" | sed -n 's/^[[:space:]]*Password[[:space:]]*:[[:space:]]*//p' | head -1)"
-  if [ -n "$SOCKS_USER" ] && [ -n "$SOCKS_PASS" ]; then
-    PROXY_URL="socks5://$SOCKS_USER:$SOCKS_PASS@127.0.0.1:$TAILSCALE_SOCKS5_PORT"
-    cat > "$HOME/.appliance/proxy.env" <<EOF
-export ALL_PROXY="$PROXY_URL"
-export HTTP_PROXY="$PROXY_URL"
-export HTTPS_PROXY="$PROXY_URL"
-export all_proxy="$PROXY_URL"
-export http_proxy="$PROXY_URL"
-export https_proxy="$PROXY_URL"
-export NO_PROXY="127.0.0.1,localhost,::1,100.64.0.0/10,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"
-export no_proxy="$NO_PROXY"
+  [ "$TS_MODE" = "termux-cli" ] || return 0
+  # The official daemon exposes an unauthenticated SOCKS5 proxy, so it stays on loopback.
+  cat > "$HOME/.appliance/proxy.env" <<EOF
+export ALL_PROXY=socks5://127.0.0.1:$TAILSCALE_SOCKS5_PORT
+export HTTP_PROXY=socks5://127.0.0.1:$TAILSCALE_SOCKS5_PORT
+export HTTPS_PROXY=socks5://127.0.0.1:$TAILSCALE_SOCKS5_PORT
+export all_proxy=socks5://127.0.0.1:$TAILSCALE_SOCKS5_PORT
+export http_proxy=socks5://127.0.0.1:$TAILSCALE_SOCKS5_PORT
+export https_proxy=socks5://127.0.0.1:$TAILSCALE_SOCKS5_PORT
+export NO_PROXY=127.0.0.1,localhost,::1,100.64.0.0/10,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
+export no_proxy=127.0.0.1,localhost,::1,100.64.0.0/10,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
 EOF
-    chmod 600 "$HOME/.appliance/proxy.env"
-    grep -qxF '[ -f "$HOME/.appliance/proxy.env" ] && . "$HOME/.appliance/proxy.env"' "$HOME/.bashrc" 2>/dev/null || printf '\n[ -f "$HOME/.appliance/proxy.env" ] && . "$HOME/.appliance/proxy.env"\n' >> "$HOME/.bashrc"
-    cat > "$PREFIX/etc/proxychains.conf" <<EOF
+  chmod 600 "$HOME/.appliance/proxy.env"
+  grep -qxF '[ -f "$HOME/.appliance/proxy.env" ] && . "$HOME/.appliance/proxy.env"' "$HOME/.bashrc" 2>/dev/null \
+    || printf '\n[ -f "$HOME/.appliance/proxy.env" ] && . "$HOME/.appliance/proxy.env"\n' >> "$HOME/.bashrc"
+  cat > "$PREFIX/etc/proxychains.conf" <<EOF
 strict_chain
 proxy_dns
 [ProxyList]
-socks5 127.0.0.1 $TAILSCALE_SOCKS5_PORT $SOCKS_USER $SOCKS_PASS
+socks5 127.0.0.1 $TAILSCALE_SOCKS5_PORT
 EOF
-    chmod 600 "$PREFIX/etc/proxychains.conf"
-  fi
+  chmod 644 "$PREFIX/etc/proxychains.conf"
+  log "SOCKS5 proxy configured on 127.0.0.1:$TAILSCALE_SOCKS5_PORT"
 }
-ts_up && configure_proxy || true
 
-log "Debian via current proot-distro"
-# Do not rely on parsing "proot-distro list": the output format differs between proot-distro
-# generations and the entry is never at the start of the line. Test the real precondition.
-if ! proot-distro login debian -- true >/dev/null 2>&1; then
-  log "Debian is not installed yet, installing it"
-  proot-distro install debian
-fi
+# ---------------------------------------------------------------- Debian
+debian_rootfs_url(){
+  local arch
+  case "$(uname -m)" in
+    aarch64) arch=aarch64 ;;
+    armv7l|armv8l|arm) arch=arm ;;
+    x86_64) arch=x86_64 ;;
+    i686|i386) arch=i686 ;;
+    *) return 1 ;;
+  esac
+  printf 'https://github.com/termux/proot-distro/releases/download/%s/debian-%s-%s-pd-%s.tar.xz' \
+    "$PROOT_DISTRO_VERSION" "$DEBIAN_CODENAME" "$arch" "$PROOT_DISTRO_VERSION"
+}
 
-DEBIAN_VERSION="$(proot-distro login debian -- cat /etc/debian_version 2>/dev/null | tr -d '[:space:]' || true)"
-DEBIAN_MAJOR="${DEBIAN_VERSION%%.*}"
-case "$DEBIAN_MAJOR" in
-  ''|*[!0-9]*) DEBIAN_MAJOR=0 ;;
-esac
-if [ "$DEBIAN_MAJOR" -eq 0 ]; then
-  warn "Could not read a numeric Debian version (got '$DEBIAN_VERSION'); skipping the minimum version check."
-elif [ "$DEBIAN_MAJOR" -lt "$DEBIAN_MIN_VERSION" ]; then
-  die "Debian $DEBIAN_VERSION is older than the required minimum Debian $DEBIAN_MIN_VERSION."
-else
-  log "Debian $DEBIAN_VERSION satisfies the minimum Debian $DEBIAN_MIN_VERSION requirement."
-fi
+ensure_debian(){
+  if proot-distro login debian -- true >/dev/null 2>&1; then
+    log "Debian is already installed"
+    return 0
+  fi
+  local url
+  url="$(debian_rootfs_url || true)"
+  if [ -n "$url" ]; then
+    log "Installing the pinned Termux Debian rootfs ($DEBIAN_CODENAME)"
+    if proot-distro install "$url" --name debian >/dev/null 2>&1; then
+      :
+    else
+      warn "The pinned rootfs could not be installed with this proot-distro, trying the distro name."
+    fi
+  fi
+  if ! proot-distro login debian -- true >/dev/null 2>&1; then
+    log "Installing Debian with proot-distro"
+    proot-distro install debian </dev/null >/dev/null 2>&1 || true
+  fi
+  proot-distro login debian -- true >/dev/null 2>&1 \
+    || die "Debian could not be installed. Check the network and the proot-distro version."
+}
 
-log "Debian packages (no apt upgrade)"
-proot-distro login debian -- env DEBIAN_USER="$DEBIAN_USER" DEBIAN_PASSWORD="$DEBIAN_PASSWORD" DEBIAN_SSH_PORT="$DEBIAN_SSH_PORT" SOCKS_PORT="$TAILSCALE_SOCKS5_PORT" SOCKS_USER="$SOCKS_USER" SOCKS_PASS="$SOCKS_PASS" bash -s <<'DEBIAN'
+check_debian_version(){
+  local version major
+  version="$(proot-distro login debian -- cat /etc/debian_version 2>/dev/null | tr -d '[:space:]' || true)"
+  major="${version%%.*}"
+  case "$major" in
+    ''|*[!0-9]*) warn "Could not read a numeric Debian version (got '$version'); skipping the minimum version check." ;;
+    *)
+      if [ "$major" -lt "$DEBIAN_MIN_VERSION" ]; then
+        die "Debian $version is older than the required minimum Debian $DEBIAN_MIN_VERSION."
+      fi
+      log "Debian $version satisfies the minimum Debian $DEBIAN_MIN_VERSION requirement."
+      ;;
+  esac
+}
+
+configure_debian(){
+  require_debian_password
+  check_debian_version
+  log "Debian packages (no apt upgrade)"
+  proot-distro login debian -- env DEBIAN_USER="$DEBIAN_USER" DEBIAN_PASSWORD="$DEBIAN_PASSWORD" DEBIAN_SSH_PORT="$DEBIAN_SSH_PORT" bash -s <<'DEBIAN'
 set -Eeuo pipefail
 export DEBIAN_FRONTEND=noninteractive
+export DEBIAN_USER DEBIAN_PASSWORD DEBIAN_SSH_PORT
 apt-get update
 apt-get install -y build-essential git git-lfs openssh-client openssh-server curl wget nano vim tmux htop python3 python3-pip python3-venv python3-dev sudo net-tools iproute2 procps ca-certificates gnupg lsb-release pkg-config libssl-dev libffi-dev zlib1g-dev proxychains4 dnsutils nmap tcpdump netcat-openbsd jq rsync unzip zip file tree less man-db lsof psmisc strace openssl sqlite3 libsqlite3-dev
 
 if ! id "$DEBIAN_USER" >/dev/null 2>&1; then useradd -m -s /bin/bash -G sudo "$DEBIAN_USER"; fi
 printf '%s:%s\n' "$DEBIAN_USER" "$DEBIAN_PASSWORD" | chpasswd
-printf '%s ALL=(ALL) NOPASSWD:ALL\n' "$DEBIAN_USER" > /etc/sudoers.d/90-appliance-admin
-chmod 0440 /etc/sudoers.d/90-appliance-admin
+printf '%s ALL=(ALL) NOPASSWD:ALL\n' "$DEBIAN_USER" > "/etc/sudoers.d/90-appliance-$DEBIAN_USER"
+chmod 0440 "/etc/sudoers.d/90-appliance-$DEBIAN_USER"
 
 mkdir -p /run/sshd
 ssh-keygen -A
@@ -230,77 +354,50 @@ if grep -qE '^[#[:space:]]*PasswordAuthentication[[:space:]]+' /etc/ssh/sshd_con
 else
   printf '\nPasswordAuthentication yes\n' >> /etc/ssh/sshd_config
 fi
-cat > /etc/proxychains4.conf <<PROXY
-strict_chain
-proxy_dns
-[ProxyList]
-socks5 127.0.0.1 $SOCKS_PORT $SOCKS_USER $SOCKS_PASS
-PROXY
 mkdir -p /workspace
 chown "$DEBIAN_USER:$DEBIAN_USER" /workspace
-cat > /etc/profile.d/appliance-proxy.sh <<PROXYENV
-export ALL_PROXY="socks5://$SOCKS_USER:$SOCKS_PASS@127.0.0.1:$SOCKS_PORT"
-export HTTP_PROXY="$ALL_PROXY"
-export HTTPS_PROXY="$ALL_PROXY"
-export all_proxy="$ALL_PROXY"
-export http_proxy="$ALL_PROXY"
-export https_proxy="$ALL_PROXY"
-export NO_PROXY="127.0.0.1,localhost,::1,100.64.0.0/10,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"
-export no_proxy="$NO_PROXY"
-PROXYENV
-chmod 644 /etc/profile.d/appliance-proxy.sh
 DEBIAN
+  log "Debian account '$DEBIAN_USER' configured"
+}
 
-cat > "$HOME/appliance-complete" <<'EOF'
-#!/data/data/com.termux/files/usr/bin/bash
-set -Eeuo pipefail
-HOSTNAME="$(cat "$HOME/.appliance/state/hostname")"
-TSBIN="$(command -v tailscale 2>/dev/null || command -v tailscale-cli 2>/dev/null || echo tailscale)"
-"$TSBIN" up --hostname="$HOSTNAME"
-SOCKS_INFO="$(tailscale-socks5 2>/dev/null || true)"
-SOCKS_USER="$(printf '%s\n' "$SOCKS_INFO" | sed -n 's/^[[:space:]]*Username[[:space:]]*:[[:space:]]*//p' | head -1)"
-SOCKS_PASS="$(printf '%s\n' "$SOCKS_INFO" | sed -n 's/^[[:space:]]*Password[[:space:]]*:[[:space:]]*//p' | head -1)"
-cat > "$PREFIX/etc/proxychains.conf" <<PROXY
-strict_chain
-proxy_dns
-[ProxyList]
-socks5 127.0.0.1 1055 $SOCKS_USER $SOCKS_PASS
-PROXY
-chmod 600 "$PREFIX/etc/proxychains.conf"
-echo "Tailscale/proxy completion updated."
-EOF
-chmod +x "$HOME/appliance-complete"
-
-log "Debian SSH helper"
-cat > "$HOME/start-debian-ssh" <<'EOF'
+start_debian_ssh(){
+  cat > "$HOME/start-debian-ssh" <<'EOF'
 #!/data/data/com.termux/files/usr/bin/bash
 set -Eeuo pipefail
 termux-wake-lock 2>/dev/null || true
 tmux kill-session -t debian-ssh 2>/dev/null || true
 tmux new-session -d -s debian-ssh "proot-distro login debian -- bash -lc 'mkdir -p /run/sshd; exec /usr/sbin/sshd -D -e'"
 EOF
-chmod +x "$HOME/start-debian-ssh"
-cat > "$HOME/stop-debian-ssh" <<'EOF'
+  chmod +x "$HOME/start-debian-ssh"
+  cat > "$HOME/stop-debian-ssh" <<'EOF'
 #!/data/data/com.termux/files/usr/bin/bash
 tmux kill-session -t debian-ssh 2>/dev/null || true
 EOF
-chmod +x "$HOME/stop-debian-ssh"
-"$HOME/start-debian-ssh" || warn "Debian SSH start failed"
-sleep 2
-if have ss && ss -lnt 2>/dev/null | grep -qE ":$DEBIAN_SSH_PORT\b"; then
-  log "Debian SSH is listening on port $DEBIAN_SSH_PORT for user $DEBIAN_USER."
-else
-  die "Debian SSH is NOT listening on port $DEBIAN_SSH_PORT. Run '$HOME/start-debian-ssh' inside Termux and check the debian-ssh tmux session."
-fi
+  chmod +x "$HOME/stop-debian-ssh"
+  "$HOME/start-debian-ssh" || warn "Debian SSH start failed"
+  sleep 2
+  if have ss && ss -lnt 2>/dev/null | grep -qE ":$DEBIAN_SSH_PORT\b"; then
+    log "Debian SSH is listening on port $DEBIAN_SSH_PORT for user $DEBIAN_USER."
+  else
+    die "Debian SSH is NOT listening on port $DEBIAN_SSH_PORT. Run '$HOME/start-debian-ssh' inside Termux and check the debian-ssh tmux session."
+  fi
+}
 
-log "Local details/operations page"
-mkdir -p "$HOME/appliance-web"
-cat > "$HOME/appliance-web/server.py" <<'PY'
+# ---------------------------------------------------------------- operations page
+configure_ops_page(){
+  log "Local details/operations page"
+  mkdir -p "$HOME/appliance-web"
+  cat > "$HOME/appliance-web/server.py" <<'PY'
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import os, subprocess, socket, html
 HOME=os.path.expanduser("~")
 PORT=int(os.environ.get("APPLIANCE_WEB_PORT","8080"))
-SHOW=os.environ.get("SHOW_LAB_CREDENTIALS","true").lower()=="true"
+BIND=os.environ.get("APPLIANCE_WEB_BIND","127.0.0.1")
+TERMUX_PORT=os.environ.get("TERMUX_SSH_PORT","8022")
+DEBIAN_PORT=os.environ.get("DEBIAN_SSH_PORT","2222")
+TERMUX_USER=os.environ.get("TERMUX_SSH_USER","termux")
+DEBIAN_USER=os.environ.get("DEBIAN_USER","admin")
+SHOW=os.environ.get("SHOW_LAB_CREDENTIALS","false").lower()=="true"
 def sh(c):
     try: return subprocess.check_output(c,shell=True,text=True,stderr=subprocess.DEVNULL).strip()
     except: return ""
@@ -315,25 +412,25 @@ def envfile():
 class H(BaseHTTPRequestHandler):
     def do_GET(self):
         e=envfile() if SHOW else {}
-        host=open(HOME+"/.appliance/state/hostname").read().strip()
-        tsbin=sh("command -v tailscale 2>/dev/null || command -v tailscale-cli 2>/dev/null || echo tailscale")
-        ts=sh(tsbin+" status 2>/dev/null | head -20")
-        ip=sh(tsbin+" ip -4 2>/dev/null | head -1")
+        try: host=open(HOME+"/.appliance/state/hostname").read().strip()
+        except: host="unknown"
+        ts=sh("tailscale --socket=" + os.environ.get("TS_SOCKET","") + " status 2>/dev/null | head -20")
+        ip=sh("tailscale --socket=" + os.environ.get("TS_SOCKET","") + " ip -4 2>/dev/null | head -1")
         lan=sh("ip route get 1.1.1.1 2>/dev/null | sed -n 's/.*src \\([^ ]*\\).*/\\1/p'")
-        creds=f"Termux: {e.get('TERMUX_USER','-')} / {e.get('TERMUX_PASSWORD','-')}\\nDebian: {e.get('DEBIAN_USER','Alpha7')} / {e.get('DEBIAN_PASSWORD','-')}" if SHOW else "Lab credentials hidden"
+        creds=f"Termux: {TERMUX_USER} / {e.get('TERMUX_PASSWORD','-')}\\nDebian: {DEBIAN_USER} / {e.get('DEBIAN_PASSWORD','-')}" if SHOW else "Lab credentials hidden"
         body=f"""<!doctype html><meta name=viewport content="width=device-width,initial-scale=1">
 <title>Android Development Appliance</title>
-<style>body{{font:16px system-ui;max-width:900px;margin:auto;padding:20px;background:#0b1020;color:#eef2ff}}section{{background:#151c33;border:1px solid #303a60;border-radius:14px;padding:18px;margin:14px 0}}pre{{white-space:pre-wrap;background:#080d18;padding:14px;border-radius:10px}}</style>
+<style>body{{font:16px system-ui;max-width:900px;margin:auto;padding:20px;background:#0b1020;color:#eef2ff}}section{{background:#151c33;border:1px solid #303a60;border-radius:14px;padding:18px;margin:14px 0}}pre{{white-space:pre-wrap;background:#080d18;border-radius:10px;padding:14px}}</style>
 <h1>Android Development Appliance</h1><p>{html.escape(host)}</p>
 <section><h2>Status</h2><pre>Tailscale IPv4: {html.escape(ip or '-')}
 LAN IPv4: {html.escape(lan or '-')}
-Termux SSH: 8022
-Debian SSH: 2222
+Termux SSH: {html.escape(TERMUX_PORT)}
+Debian SSH: {html.escape(DEBIAN_PORT)}
 Details: http://127.0.0.1:{PORT}</pre></section>
 <section><h2>Tailscale</h2><pre>{html.escape(ts or '-')}</pre></section>
-<section><h2>SSH</h2><pre>ssh -p 8022 {html.escape(e.get('TERMUX_USER','&lt;termux-user&gt;'))}@{html.escape(host)}
-ssh -p 2222 {html.escape(e.get('DEBIAN_USER','Alpha7'))}@{html.escape(host)}</pre></section>
-<section><h2>Proxy</h2><pre>SOCKS5 127.0.0.1:1055
+<section><h2>SSH</h2><pre>ssh -p {html.escape(TERMUX_PORT)} {html.escape(TERMUX_USER)}@{html.escape(host)}
+ssh -p {html.escape(DEBIAN_PORT)} {html.escape(DEBIAN_USER)}@{html.escape(host)}</pre></section>
+<section><h2>Proxy</h2><pre>SOCKS5 127.0.0.1:1055 (loopback only)
 Level 1: ALL_PROXY / HTTP_PROXY / HTTPS_PROXY
 Level 2: proxychains4 &lt;command&gt;</pre></section>
 <section><h2>Credentials</h2><pre>{html.escape(creds)}</pre></section>
@@ -344,35 +441,106 @@ jq + rsync + zip/unzip + diagnostics
 nmap + tcpdump + DNS + netcat</pre></section>"""
         b=body.encode(); self.send_response(200); self.send_header("Content-Type","text/html; charset=utf-8"); self.send_header("Content-Length",str(len(b))); self.end_headers(); self.wfile.write(b)
     def log_message(self,*a): pass
-ThreadingHTTPServer((os.environ.get("APPLIANCE_WEB_BIND","127.0.0.1"),PORT),H).serve_forever()
+ThreadingHTTPServer((BIND,PORT),H).serve_forever()
 PY
 
-mkdir -p "$PREFIX/var/service/appliance-web"
-printf 'APPLIANCE_WEB_BIND=%s\n' "${APPLIANCE_WEB_BIND:-127.0.0.1}" > "$APP_HOME/web.env"
-chmod 600 "$APP_HOME/web.env"
-cat > "$PREFIX/var/service/appliance-web/run" <<EOF
+  mkdir -p "$PREFIX/var/service/appliance-web"
+  cat > "$PREFIX/var/service/appliance-web/run" <<EOF
 #!/data/data/com.termux/files/usr/bin/sh
-[ -f "$APP_HOME/web.env" ] && . "$APP_HOME/web.env"
+[ -f "$ENV_FILE" ] && . "$ENV_FILE"
+[ -f "$TS_DIR/tailscaled.sock" ] && export TS_SOCKET="$TS_SOCKET"
 exec python "$HOME/appliance-web/server.py" 2>&1
 EOF
-chmod +x "$PREFIX/var/service/appliance-web/run"
-if have sv-enable; then sv-enable appliance-web >/dev/null 2>&1 || true; sv up appliance-web >/dev/null 2>&1 || true; else nohup python "$HOME/appliance-web/server.py" >/dev/null 2>&1 & fi
+  chmod 700 "$PREFIX/var/service/appliance-web/run"
+  if have sv-enable; then
+    sv-enable appliance-web >/dev/null 2>&1 || warn "Could not enable the appliance-web service."
+    sv up appliance-web >/dev/null 2>&1 || warn "Could not start the appliance-web service."
+  else
+    nohup python "$HOME/appliance-web/server.py" >/dev/null 2>&1 &
+  fi
+}
 
-cat > "$HOME/appliance-status" <<'EOF'
-#!/data/data/com.termux/files/usr/bin/bash
-echo "=== Android Development Appliance ==="
-echo "Hostname: $(cat "$HOME/.appliance/state/hostname" 2>/dev/null || hostname)"
-TSBIN="$(command -v tailscale 2>/dev/null || command -v tailscale-cli 2>/dev/null || echo tailscale)"
-echo "Tailscale:"; "$TSBIN" status 2>/dev/null || true
-echo "Listening:"; ss -lnt 2>/dev/null | grep -E ':(8022|2222|8080)\b' || true
-echo "Details: http://127.0.0.1:8080"
+# ---------------------------------------------------------------- credentials file
+write_credentials(){
+  umask 077
+  cat > "$APP_HOME/credentials.env" <<EOF
+TERMUX_USER=$(id -un)
+TERMUX_PASSWORD=$TERMUX_PASSWORD
+DEBIAN_USER=$DEBIAN_USER
+DEBIAN_PASSWORD=$DEBIAN_PASSWORD
 EOF
-chmod +x "$HOME/appliance-status"
+  chmod 600 "$APP_HOME/credentials.env"
+}
 
-printf 'provisioned=true\n' > "$STATE/provisioned"
-printf 'show_lab_credentials=%s\n' "$SHOW_LAB_CREDENTIALS" > "$STATE/config"
-printf 'hostname=%s\n' "$HOSTNAME" >> "$STATE/provisioned"
-log "Provisioning complete"
-printf 'Details page: http://127.0.0.1:8080\n'
-printf 'Termux SSH: %s | Debian SSH: %s | SOCKS5: %s\n' "$TERMUX_SSH_PORT" "$DEBIAN_SSH_PORT" "$TAILSCALE_SOCKS5_PORT"
-printf 'Credentials are stored locally in %s with mode 0600.\n' "$APP_HOME/credentials.env"
+# ---------------------------------------------------------------- hostname
+ensure_hostname(){
+  local model
+  model="$(getprop ro.product.model 2>/dev/null | tr ' ' '-' | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9_-')"
+  model="${model:-android}"
+  if [ ! -f "$STATE/hostname" ]; then
+    printf '%s-%s\n' "$model" "$(tr -dc 'a-z0-9' </dev/urandom | head -c 4)" > "$STATE/hostname"
+  fi
+}
+
+# ---------------------------------------------------------------- verification
+verify_all(){
+  log "Verification"
+  if have ss && ss -lnt 2>/dev/null | grep -qE ":$TERMUX_SSH_PORT\b"; then
+    log "Termux SSH is listening on port $TERMUX_SSH_PORT."
+  else
+    warn "Termux SSH is NOT listening on port $TERMUX_SSH_PORT."
+  fi
+  if have ss && ss -lnt 2>/dev/null | grep -qE ":$DEBIAN_SSH_PORT\b"; then
+    log "Debian SSH is listening on port $DEBIAN_SSH_PORT."
+  else
+    warn "Debian SSH is NOT listening on port $DEBIAN_SSH_PORT."
+  fi
+  if proot-distro login debian -- true >/dev/null 2>&1; then
+    log "Debian starts."
+  else
+    warn "Debian does not start."
+  fi
+  if [ "$TS_MODE" = "termux-cli" ]; then
+    if ts_up; then
+      log "Tailscale is connected: $(ts_cli ip -4 2>/dev/null | head -1)"
+    else
+      warn "Tailscale is not connected."
+    fi
+  else
+    warn "Tailscale state is owned by the official app and cannot be read from here."
+  fi
+  printf 'provisioned=true\n' > "$STATE/provisioned"
+  log "Provisioning complete"
+  printf 'Termux SSH: %s | Debian SSH: %s | SOCKS5: %s\n' "$TERMUX_SSH_PORT" "$DEBIAN_SSH_PORT" "$TAILSCALE_SOCKS5_PORT"
+  printf 'Credentials are stored locally in %s with mode 0600.\n' "$APP_HOME/credentials.env"
+}
+
+# ---------------------------------------------------------------- stages
+case "$STAGE" in
+  provision)
+    write_appliance_env
+    ensure_termux_packages
+    configure_termux_ssh
+    ensure_hostname
+    ensure_tailscale
+    configure_proxy
+    ensure_debian
+    configure_debian
+    write_credentials
+    start_debian_ssh
+    configure_ops_page
+    verify_all
+    ;;
+  tailscale-cli)
+    write_appliance_env
+    ensure_hostname
+    ensure_tailscale
+    configure_proxy
+    ;;
+  status)
+    verify_all
+    ;;
+  *)
+    die "Unknown stage: $STAGE"
+    ;;
+esac

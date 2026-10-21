@@ -31,8 +31,9 @@ import java.util.concurrent.atomic.AtomicInteger;
  *       {@code exitCode}, {@code err} and {@code errmsg}.</li>
  * </ul>
  *
- * <p>Termux requires {@code allow-external-apps=true} in {@code ~/.termux/termux.properties};
- * without it the service refuses the request and reports the policy violation in the result.
+ * <p>Termux requires {@code allow-external-apps=true} in {@code ~/.termux/termux.properties}
+ * and the user granted {@code com.termux.permission.RUN_COMMAND} to this app. Both are checked
+ * by Termux; a refusal is reported as a rejection, never as a successful run.
  */
 public final class TermuxRunner {
     public static final String TERMUX_PACKAGE = "com.termux";
@@ -54,38 +55,49 @@ public final class TermuxRunner {
     static final String KEY_STDOUT_ORIGINAL_LENGTH = "stdout_original_length";
     static final String KEY_STDERR_ORIGINAL_LENGTH = "stderr_original_length";
 
+    /** How long a single command may run before it is reported as failed. */
+    public static final long DEFAULT_TIMEOUT_MS = 30L * 60L * 1000L;
+
     private static final Map<String, Callback> WAITING = new ConcurrentHashMap<>();
     private static final AtomicInteger SEQUENCE = new AtomicInteger();
     private static final Handler MAIN = new Handler(Looper.getMainLooper());
 
     /** Result of one command run inside Termux. */
     public static final class Result {
+        public final ApplianceState.Outcome outcome;
         public final String stdout;
         public final String stderr;
+        public final String errMsg;
         public final int exitCode;
         public final int errCode;
-        public final String errMsg;
         public final boolean truncated;
 
-        Result(String stdout, String stderr, int exitCode, int errCode, String errMsg, boolean truncated) {
+        Result(ApplianceState.Outcome outcome, String stdout, String stderr, String errMsg,
+               int exitCode, int errCode, boolean truncated) {
+            this.outcome = outcome;
             this.stdout = stdout == null ? "" : stdout;
             this.stderr = stderr == null ? "" : stderr;
+            this.errMsg = errMsg == null ? "" : errMsg;
             this.exitCode = exitCode;
             this.errCode = errCode;
-            this.errMsg = errMsg == null ? "" : errMsg;
             this.truncated = truncated;
         }
 
-        /** True when Termux reported the command itself succeeded. */
         public boolean ok() {
-            return exitCode == 0 && errCode == 0;
+            return outcome == ApplianceState.Outcome.OK;
         }
 
-        /** The most useful text for a human: stderr and error message take precedence. */
+        /** True when the command was refused because a prerequisite is missing. */
+        public boolean rejected() {
+            return outcome == ApplianceState.Outcome.REJECTED;
+        }
+
+        /** The most useful text for a human: errors take precedence over output. */
         public String summary() {
             if (!ok()) {
                 if (!errMsg.isEmpty()) return errMsg;
                 if (!stderr.isEmpty()) return tail(stderr);
+                return "The command failed with exit code " + exitCode + ".";
             }
             return tail(stdout);
         }
@@ -108,8 +120,7 @@ public final class TermuxRunner {
 
     public static boolean isTermuxInstalled(Context context) {
         try {
-            PackageManager pm = context.getPackageManager();
-            pm.getPackageInfo(TERMUX_PACKAGE, 0);
+            context.getPackageManager().getPackageInfo(TERMUX_PACKAGE, 0);
             return true;
         } catch (Exception e) {
             return false;
@@ -132,6 +143,11 @@ public final class TermuxRunner {
      */
     public static boolean run(Activity activity, String label, String description, String script,
                               Callback callback) {
+        return run(activity, label, description, script, callback, DEFAULT_TIMEOUT_MS);
+    }
+
+    public static boolean run(Activity activity, String label, String description, String script,
+                              Callback callback, long timeoutMs) {
         if (!isTermuxInstalled(activity)) {
             deliverError(callback, "Termux is not installed.");
             return false;
@@ -170,9 +186,19 @@ public final class TermuxRunner {
             activity.startService(intent);
         } catch (Exception e) {
             WAITING.remove(id);
-            deliverError(callback, "Termux refused the command: " + e.getMessage());
+            deliverRejected(callback, "Termux refused the command: " + e.getMessage());
             return false;
         }
+        // A command that never reports back must not leave the UI hanging forever.
+        MAIN.postDelayed(new Runnable() {
+            @Override public void run() {
+                Callback waiting = WAITING.remove(id);
+                if (waiting != null) {
+                    waiting.onResult(new Result(ApplianceState.Outcome.FAILED, "", "",
+                            "The command did not report back within the time limit.", -1, 0, false));
+                }
+            }
+        }, timeoutMs);
         return true;
     }
 
@@ -180,7 +206,16 @@ public final class TermuxRunner {
         if (callback == null) return;
         MAIN.post(new Runnable() {
             @Override public void run() {
-                callback.onResult(new Result("", message, -1, -1, message, false));
+                callback.onResult(new Result(ApplianceState.Outcome.FAILED, "", message, message, -1, -1, false));
+            }
+        });
+    }
+
+    private static void deliverRejected(Callback callback, String message) {
+        if (callback == null) return;
+        MAIN.post(new Runnable() {
+            @Override public void run() {
+                callback.onResult(new Result(ApplianceState.Outcome.REJECTED, "", message, message, -1, -1, false));
             }
         });
     }
@@ -199,7 +234,8 @@ public final class TermuxRunner {
     /** Parses the bundle Termux attached to the result intent. */
     static Result parse(Bundle bundle) {
         if (bundle == null) {
-            return new Result("", "", -1, -1, "Termux did not return a result bundle.", false);
+            return new Result(ApplianceState.Outcome.FAILED, "", "",
+                    "Termux did not return a result bundle.", -1, -1, false);
         }
         String stdout = bundle.getString(KEY_STDOUT, "");
         String stderr = bundle.getString(KEY_STDERR, "");
@@ -214,6 +250,9 @@ public final class TermuxRunner {
         } catch (Exception ignored) {
             // The length keys are optional.
         }
-        return new Result(stdout, stderr, exitCode, errCode, errMsg, truncated);
+        boolean authorisation = ApplianceState.isAuthorisationProblem(errMsg)
+                || ApplianceState.isAuthorisationProblem(stderr);
+        ApplianceState.Outcome outcome = ApplianceState.classify(exitCode, errCode, errMsg, authorisation);
+        return new Result(outcome, stdout, stderr, errMsg, exitCode, errCode, truncated);
     }
 }
