@@ -2,9 +2,10 @@
 set -Eeuo pipefail
 umask 077
 
-DEBIAN_USER="${DEBIAN_USER:-admin}"
+DEBIAN_USER="${DEBIAN_USER:-Alpha7}"
 TERMUX_SSH_PORT="${TERMUX_SSH_PORT:-8022}"
 DEBIAN_SSH_PORT="${DEBIAN_SSH_PORT:-2222}"
+DEBIAN_MIN_VERSION="${DEBIAN_MIN_VERSION:-12}"
 TAILSCALE_SOCKS5_PORT="${TAILSCALE_SOCKS5_PORT:-1055}"
 SHOW_LAB_CREDENTIALS="${SHOW_LAB_CREDENTIALS:-true}"
 TS_AUTHKEY="${TS_AUTHKEY:-__ALPHA7A_TAILSCALE_AUTHKEY__}"
@@ -43,7 +44,7 @@ have pkg || die "Run this from the appliance terminal."
 
 if [ ! -f "$APP_HOME/credentials.env" ]; then
   TERMUX_PASSWORD="${TERMUX_PASSWORD:-$(random_secret)}"
-  DEBIAN_PASSWORD="${DEBIAN_PASSWORD:-$(random_secret)}"
+  DEBIAN_PASSWORD="${DEBIAN_PASSWORD:-Alpha7}"
   cat > "$APP_HOME/credentials.env" <<EOF
 TERMUX_USER=$(id -un)
 TERMUX_PASSWORD=$TERMUX_PASSWORD
@@ -69,11 +70,18 @@ else
   printf '\nPort %s\n' "$TERMUX_SSH_PORT" >> "$PREFIX/etc/ssh/sshd_config"
 fi
 if have sv-enable && [ -d "$PREFIX/var/service/sshd" ]; then
-  sv-enable sshd >/dev/null 2>&1 || true
-  sv up sshd >/dev/null 2>&1 || true
+  sv-enable sshd >/dev/null 2>&1 || warn "Could not enable the sshd service."
+  sv up sshd >/dev/null 2>&1 || warn "Could not start sshd through termux-services."
 else
+  warn "termux-services is not available for sshd; starting sshd directly."
   pkill sshd 2>/dev/null || true
-  sshd || true
+  sshd || warn "Could not start the Termux sshd daemon."
+fi
+sleep 1
+if have ss && ss -lnt 2>/dev/null | grep -qE ":$TERMUX_SSH_PORT\b"; then
+  log "Termux SSH is listening on port $TERMUX_SSH_PORT."
+else
+  warn "Termux SSH is NOT listening on port $TERMUX_SSH_PORT. Run 'sv up sshd' in Termux and check $PREFIX/var/service/sshd."
 fi
 
 log "Tailscale userspace"
@@ -163,6 +171,19 @@ if ! proot-distro list 2>/dev/null | grep -qE '^debian([[:space:]]|$)'; then
   proot-distro install debian
 fi
 
+DEBIAN_VERSION="$(proot-distro login debian -- cat /etc/debian_version 2>/dev/null | tr -d '[:space:]' || true)"
+DEBIAN_MAJOR="${DEBIAN_VERSION%%.*}"
+case "$DEBIAN_MAJOR" in
+  ''|*[!0-9]*) DEBIAN_MAJOR=0 ;;
+esac
+if [ "$DEBIAN_MAJOR" -eq 0 ]; then
+  warn "Could not read a numeric Debian version (got '$DEBIAN_VERSION'); skipping the minimum version check."
+elif [ "$DEBIAN_MAJOR" -lt "$DEBIAN_MIN_VERSION" ]; then
+  die "Debian $DEBIAN_VERSION is older than the required minimum Debian $DEBIAN_MIN_VERSION."
+else
+  log "Debian $DEBIAN_VERSION satisfies the minimum Debian $DEBIAN_MIN_VERSION requirement."
+fi
+
 log "Debian packages (no apt upgrade)"
 proot-distro login debian -- env DEBIAN_USER="$DEBIAN_USER" DEBIAN_PASSWORD="$DEBIAN_PASSWORD" DEBIAN_SSH_PORT="$DEBIAN_SSH_PORT" SOCKS_PORT="$TAILSCALE_SOCKS5_PORT" SOCKS_USER="$SOCKS_USER" SOCKS_PASS="$SOCKS_PASS" bash -s <<'DEBIAN'
 set -Eeuo pipefail
@@ -242,6 +263,12 @@ tmux kill-session -t debian-ssh 2>/dev/null || true
 EOF
 chmod +x "$HOME/stop-debian-ssh"
 "$HOME/start-debian-ssh" || warn "Debian SSH start failed"
+sleep 2
+if have ss && ss -lnt 2>/dev/null | grep -qE ":$DEBIAN_SSH_PORT\b"; then
+  log "Debian SSH is listening on port $DEBIAN_SSH_PORT for user $DEBIAN_USER."
+else
+  warn "Debian SSH is NOT listening on port $DEBIAN_SSH_PORT. Run '$HOME/start-debian-ssh' in Termux and check the debian-ssh tmux session."
+fi
 
 log "Local details/operations page"
 mkdir -p "$HOME/appliance-web"
@@ -269,7 +296,7 @@ class H(BaseHTTPRequestHandler):
         ts=sh("tailscale-cli status 2>/dev/null | head -20")
         ip=sh("tailscale-cli ip -4 2>/dev/null | head -1")
         lan=sh("ip route get 1.1.1.1 2>/dev/null | sed -n 's/.*src \\([^ ]*\\).*/\\1/p'")
-        creds=f"Termux: {e.get('TERMUX_USER','-')} / {e.get('TERMUX_PASSWORD','-')}\\nDebian: {e.get('DEBIAN_USER','admin')} / {e.get('DEBIAN_PASSWORD','-')}" if SHOW else "Lab credentials hidden"
+        creds=f"Termux: {e.get('TERMUX_USER','-')} / {e.get('TERMUX_PASSWORD','-')}\\nDebian: {e.get('DEBIAN_USER','Alpha7')} / {e.get('DEBIAN_PASSWORD','-')}" if SHOW else "Lab credentials hidden"
         body=f"""<!doctype html><meta name=viewport content="width=device-width,initial-scale=1">
 <title>Android Development Appliance</title>
 <style>body{{font:16px system-ui;max-width:900px;margin:auto;padding:20px;background:#0b1020;color:#eef2ff}}section{{background:#151c33;border:1px solid #303a60;border-radius:14px;padding:18px;margin:14px 0}}pre{{white-space:pre-wrap;background:#080d18;padding:14px;border-radius:10px}}</style>
@@ -281,7 +308,7 @@ Debian SSH: 2222
 Details: http://127.0.0.1:{PORT}</pre></section>
 <section><h2>Tailscale</h2><pre>{html.escape(ts or '-')}</pre></section>
 <section><h2>SSH</h2><pre>ssh -p 8022 {html.escape(e.get('TERMUX_USER','&lt;termux-user&gt;'))}@{html.escape(host)}
-ssh -p 2222 admin@{html.escape(host)}</pre></section>
+ssh -p 2222 {html.escape(e.get('DEBIAN_USER','Alpha7'))}@{html.escape(host)}</pre></section>
 <section><h2>Proxy</h2><pre>SOCKS5 127.0.0.1:1055
 Level 1: ALL_PROXY / HTTP_PROXY / HTTPS_PROXY
 Level 2: proxychains4 &lt;command&gt;</pre></section>
