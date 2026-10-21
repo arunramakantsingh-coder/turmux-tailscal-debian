@@ -65,7 +65,22 @@ public class MainActivity extends Activity {
         TextView status = text(statusText(), 15);
         box.addView(status);
 
-        Button openTermux = button("1. Open Termux");
+        Button installTermux = button("1. Install official Termux");
+        installTermux.setOnClickListener(v -> {
+            if (isTermuxInstalled()) {
+                Toast.makeText(this, "Termux is already installed.", Toast.LENGTH_LONG).show();
+                return;
+            }
+            try {
+                startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/termux/termux-app/releases/latest")));
+                Toast.makeText(this, "Download the APK from GitHub Releases, install it, then return to Alpha7A.", Toast.LENGTH_LONG).show();
+            } catch (Exception e) {
+                Toast.makeText(this, "Could not open official Termux releases.", Toast.LENGTH_LONG).show();
+            }
+        });
+        box.addView(installTermux);
+
+        Button openTermux = button("2. Configure Termux external commands");
         openTermux.setOnClickListener(v -> {
             copy("mkdir -p ~/.termux && printf '%s\\n' 'allow-external-apps=true' > ~/.termux/termux.properties");
             launch(TERMUX);
@@ -73,7 +88,7 @@ public class MainActivity extends Activity {
         });
         box.addView(openTermux);
 
-        Button permission = button("2. Grant Alpha7A: Run commands in Termux");
+        Button permission = button("3. Grant Alpha7A: Run commands in Termux");
         permission.setOnClickListener(v -> {
             try {
                 requestPermissions(new String[]{RUN_PERMISSION}, REQ);
@@ -87,7 +102,7 @@ public class MainActivity extends Activity {
         settings.setOnClickListener(v -> openAppSettings());
         box.addView(settings);
 
-        Button provision = button("3. START ALPHA7A PROVISIONING");
+        Button provision = button("4. START ALPHA7A PROVISIONING");
         provision.setOnClickListener(v -> provision());
         box.addView(provision);
 
@@ -115,40 +130,19 @@ public class MainActivity extends Activity {
 
     private void provision() {
         if (!isTermuxInstalled()) {
-            Toast.makeText(this, "Install the official Termux app first.", Toast.LENGTH_LONG).show();
-            launch(TERMUX); return;
+            Toast.makeText(this, "Install official Termux first, then return here.", Toast.LENGTH_LONG).show();
+            try { startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/termux/termux-app/releases/latest"))); } catch (Exception ignored) {}
+            return;
         }
         if (checkSelfPermission(RUN_PERMISSION) != PackageManager.PERMISSION_GRANTED) {
             Toast.makeText(this, "Grant Alpha7A the Termux RUN_COMMAND permission first.", Toast.LENGTH_LONG).show();
             return;
         }
-
-        EditText keyInput = new EditText(this);
-        keyInput.setSingleLine(true);
-        keyInput.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
-        keyInput.setHint("tskey-auth-…");
-        new AlertDialog.Builder(this)
-            .setTitle("Tailscale authentication")
-            .setMessage("Enter a Tailscale auth key for this device. The key is supplied at runtime and is not embedded in the APK.")
-            .setView(keyInput)
-            .setNegativeButton("Cancel", (dialog, which) -> { })
-            .setPositiveButton("Start provisioning", (dialog, which) -> {
-                String key = keyInput.getText().toString().trim();
-                if (!key.startsWith("tskey-auth-")) {
-                    Toast.makeText(this, "Enter a valid Tailscale auth key.", Toast.LENGTH_LONG).show();
-                    return;
-                }
-                runProvisioning(key);
-            })
-            .show();
+        runProvisioning();
     }
 
-    private void runProvisioning(String authKey) {
+    private void runProvisioning() {
         String script = loadPayload();
-        String encoded = Base64.encodeToString(authKey.getBytes(java.nio.charset.StandardCharsets.UTF_8), Base64.NO_WRAP);
-        // Supply the secret only over this runtime command input; never write it to the APK or repository.
-        script = "export TS_AUTHKEY=\"$(printf '%s' '" + encoded + "' | base64 -d)\"\n" + script;
-
         Intent i = new Intent("com.termux.RUN_COMMAND");
         i.setComponent(new ComponentName(TERMUX, "com.termux.app.RunCommandService"));
         i.putExtra("com.termux.RUN_COMMAND_PATH", "/data/data/com.termux/files/usr/bin/bash");
