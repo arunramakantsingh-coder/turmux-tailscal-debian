@@ -2,6 +2,7 @@ package com.arunramakantsingh.alpha7a;
 
 import android.Manifest;
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.ComponentName;
@@ -12,6 +13,9 @@ import android.graphics.Color;
 import android.net.Uri;
 import android.os.Bundle;
 import android.provider.Settings;
+import android.text.InputType;
+import android.util.Base64;
+import android.widget.EditText;
 import android.view.Gravity;
 import android.view.ViewGroup;
 import android.widget.Button;
@@ -94,7 +98,7 @@ public class MainActivity extends Activity {
             "• Android grants Alpha7A the Termux RUN_COMMAND permission\n" +
             "• Tap START once\n" +
             "• Termux performs package, Tailscale, Debian, SSH, proxy and web-page provisioning\n\n" +
-            "The provisioning payload is included in the APK, but no Tailscale auth key is embedded. Enter the key during first-run provisioning when prompted.",
+            "The provisioning payload is included in the APK, but no Tailscale auth key is embedded. Enter a device auth key in the first-run dialog; the app supplies it to Termux only when provisioning starts.",
             14));
 
         ScrollView scroll = new ScrollView(this);
@@ -119,7 +123,32 @@ public class MainActivity extends Activity {
             return;
         }
 
+        EditText keyInput = new EditText(this);
+        keyInput.setSingleLine(true);
+        keyInput.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        keyInput.setHint("tskey-auth-…");
+        new AlertDialog.Builder(this)
+            .setTitle("Tailscale authentication")
+            .setMessage("Enter a Tailscale auth key for this device. The key is supplied at runtime and is not embedded in the APK.")
+            .setView(keyInput)
+            .setNegativeButton("Cancel", (dialog, which) -> { })
+            .setPositiveButton("Start provisioning", (dialog, which) -> {
+                String key = keyInput.getText().toString().trim();
+                if (!key.startsWith("tskey-auth-")) {
+                    Toast.makeText(this, "Enter a valid Tailscale auth key.", Toast.LENGTH_LONG).show();
+                    return;
+                }
+                runProvisioning(key);
+            })
+            .show();
+    }
+
+    private void runProvisioning(String authKey) {
         String script = loadPayload();
+        String encoded = Base64.encodeToString(authKey.getBytes(java.nio.charset.StandardCharsets.UTF_8), Base64.NO_WRAP);
+        // Supply the secret only over this runtime command input; never write it to the APK or repository.
+        script = "export TS_AUTHKEY=\\"$(printf '%s' '" + encoded + "' | base64 -d)\\"\\n" + script;
+
         Intent i = new Intent("com.termux.RUN_COMMAND");
         i.setComponent(new ComponentName(TERMUX, "com.termux.app.RunCommandService"));
         i.putExtra("com.termux.RUN_COMMAND_PATH", "/data/data/com.termux/files/usr/bin/bash");
