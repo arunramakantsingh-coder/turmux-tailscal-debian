@@ -130,11 +130,6 @@ jobs:
       - name: Build private distribution page
         run: |
           set -Eeuo pipefail
-          CHANGELOG=""
-          if [ -f CHANGELOG.md ]; then
-            CHANGELOG="$(awk 'BEGIN{s=0} /^## /{s++; next} s==1{print} s>=2{exit}' CHANGELOG.md)"
-          fi
-          CHANGELOG_HTML="$(printf '%s' "$CHANGELOG" | sed -e 's/^/- /' -e 's/[&|\\]/\\&/g')"
           cat > site/index.html <<'HTML'
           <!doctype html>
           <html lang="en">
@@ -165,20 +160,41 @@ jobs:
           <div class="card warn"><b>Android restriction:</b> Android still requires user confirmation to install an APK, and Termux requires the user to allow external apps to run commands.</div>
           </body></html>
           HTML
-          sed -i \
-            -e "s/__VERSION__/$VERSION/g" \
-            -e "s/__VERSION_CODE__/$VERSION_CODE/g" \
-            -e "s/__BUILD_SHA__/$BUILD_SHA/g" \
-            -e "s/__BUILD_DATE__/$BUILD_DATE/g" \
-            -e "s/__APK_NAME__/$APK_NAME/g" \
-            -e "s/__SOURCE_COMMIT__/$GITHUB_SHA/g" \
-            -e "s/__RUN_ID__/$GITHUB_RUN_ID/g" \
-            -e "s|__CHANGELOG__|$CHANGELOG_HTML|g" \
-            site/index.html
-          if grep -q '__[A-Z_][A-Z_]*__' site/index.html; then
-            echo "::error::unresolved placeholder left in site/index.html"; exit 1
-          fi
-          echo "Page shows Alpha7A v$VERSION (build $BUILD_SHA)"
+          python3 - <<'PY'
+          import os, pathlib, re
+          page = pathlib.Path("site/index.html")
+          html = page.read_text(encoding="utf-8")
+          values = {
+              "__VERSION__": os.environ["VERSION"],
+              "__VERSION_CODE__": os.environ["VERSION_CODE"],
+              "__BUILD_SHA__": os.environ["BUILD_SHA"],
+              "__BUILD_DATE__": os.environ["BUILD_DATE"],
+              "__APK_NAME__": os.environ["APK_NAME"],
+              "__SOURCE_COMMIT__": os.environ["GITHUB_SHA"],
+              "__RUN_ID__": os.environ["GITHUB_RUN_ID"],
+          }
+          changelog = []
+          changelog_file = pathlib.Path("CHANGELOG.md")
+          if changelog_file.exists():
+              started = False
+              for line in changelog_file.read_text(encoding="utf-8").splitlines():
+                  if line.startswith("## "):
+                      if started:
+                          break
+                      started = True
+                      continue
+                  if started:
+                      changelog.append(line)
+          values["__CHANGELOG__"] = "\n".join(
+              ("- " + line) if line.strip() else "" for line in "\n".join(changelog).strip().splitlines())
+          for key, value in values.items():
+              html = html.replace(key, value)
+          left = sorted(set(re.findall(r"__[A-Z_]+__", html)))
+          if left:
+              raise SystemExit("unresolved placeholder(s) in site/index.html: " + ", ".join(left))
+          page.write_text(html, encoding="utf-8")
+          print("Page rendered for Alpha7A v" + values["__VERSION__"])
+          PY
 
       - name: Publish site and APK to private distribution repository
         if: github.event_name != 'pull_request'

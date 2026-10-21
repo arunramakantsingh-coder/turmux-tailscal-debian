@@ -252,4 +252,11 @@ if grep -qE 'sha256sum site/' "$WORKFLOW"; then
   exit 1
 fi
 
+# The download page must render with every placeholder resolved.
+if command -v python3 >/dev/null 2>&1; then
+  python3 "$ROOT/tests/render_page_test.py" || exit 1
+else
+  echo "SKIP: python3 is not available, the page render test was not run"
+fi
+
 echo "PASS: repository baseline validation"
