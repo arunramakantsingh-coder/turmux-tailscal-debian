@@ -156,7 +156,7 @@ public class MainActivity extends Activity {
             verifyTermuxIntegration();
         } else {
             setComponent(ROW_TERMUX, ApplianceState.ComponentState.NEEDS_ACTION,
-                    "Grant “Run commands in Termux” in the app info page", WARN);
+                    "Grant “Run commands in Termux” in the app info page");
         }
     }
 
@@ -571,7 +571,7 @@ public class MainActivity extends Activity {
                         String why = result.rejected() ? "Termux refused the command." : "The test command did not complete.";
                         appendLog(why + " " + result.summary());
                         setComponent(ROW_TERMUX, ApplianceState.ComponentState.NEEDS_ACTION,
-                                "Allow external commands in Termux, then try again", WARN);
+                                "Allow external commands in Termux, then try again");
                         renderActions();
                     }
                 });
@@ -598,7 +598,7 @@ public class MainActivity extends Activity {
         if (!prefs().getBoolean(KEY_TERMUX_VERIFIED, false)) {
             appendLog("Termux is not authorised yet, so the components cannot be checked.");
             setComponent(ROW_TERMUX, ApplianceState.ComponentState.NEEDS_ACTION,
-                    "Authorise Alpha7A to run commands in Termux", WARN);
+                    "Authorise Alpha7A to run commands in Termux");
             return;
         }
         setComponent(ROW_TERMUX, ApplianceState.ComponentState.CONNECTED,
@@ -632,7 +632,7 @@ public class MainActivity extends Activity {
                         appendLog("The status check did not complete. " + result.summary());
                         if (result.rejected()) {
                             setComponent(ROW_TERMUX, ApplianceState.ComponentState.NEEDS_ACTION,
-                                    "Termux refused the command", WARN);
+                                    "Termux refused the command");
                         }
                         return;
                     }
@@ -658,7 +658,7 @@ public class MainActivity extends Activity {
                     "v" + TermuxRunner.termuxVersion(this) + " · packages installed");
         } else {
             setComponent(ROW_TERMUX, ApplianceState.ComponentState.NEEDS_ACTION,
-                    "Termux packages are not installed yet", WARN);
+                    "Termux packages are not installed yet");
         }
 
         setComponent(ROW_TERMUX_SSH, sshState(kv.get("termux_ssh")),
@@ -788,7 +788,7 @@ public class MainActivity extends Activity {
         if (!prefs().getBoolean(KEY_TERMUX_VERIFIED, false)) {
             appendLog("Termux is not authorised yet.");
             setComponent(ROW_TERMUX, ApplianceState.ComponentState.NEEDS_ACTION,
-                    "Authorise Alpha7A to run commands in Termux", WARN);
+                    "Authorise Alpha7A to run commands in Termux");
             renderActions();
             return;
         }
@@ -833,7 +833,7 @@ public class MainActivity extends Activity {
         if (result.rejected()) {
             setPhase(ApplianceState.Phase.PREREQUISITE_REQUIRED);
             setComponent(ROW_TERMUX, ApplianceState.ComponentState.NEEDS_ACTION,
-                    "Termux refused the command: " + result.summary(), WARN);
+                    "Termux refused the command: " + result.summary());
             appendLog("Termux refused the command. " + result.summary());
             renderActions();
             return;
@@ -961,7 +961,7 @@ public class MainActivity extends Activity {
     private String currentStageDescription() {
         ApplianceState.Phase phase = currentPhase();
         switch (phase) {
-            case PREREQUISUTE_REQUIRED:
+            case PREREQUISITE_REQUIRED:
                 return TermuxRunner.isTermuxInstalled(this)
                         ? "Alpha7A still needs permission to run commands in Termux"
                         : "Install the official Termux app to continue";
