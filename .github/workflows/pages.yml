@@ -8,6 +8,8 @@ on:
       - "alpha7a/**"
       - "site/**"
       - ".github/workflows/pages.yml"
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -33,7 +35,10 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
         with:
-          packages: platform-tools
+          packages: |
+            platform-tools
+            platforms;android-35
+            build-tools;35.0.0
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
@@ -41,28 +46,15 @@ jobs:
           gradle-version: "8.7"
 
       - name: Prepare Alpha7A provisioning payload
-        env:
-          TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY }}
         run: |
           set -Eeuo pipefail
-          test -n "$TAILSCALE_AUTHKEY"
-          test "${TAILSCALE_AUTHKEY#tskey-auth-}" != "$TAILSCALE_AUTHKEY"
           mkdir -p alpha7a/app/src/main/assets
-          python3 - <<'PY'
-          import os
-          from pathlib import Path
-          p = Path("bootstrap/setup.sh").read_text()
-          key = os.environ["TAILSCALE_AUTHKEY"]
-          if "__EMBEDDED_TS_AUTHKEY__" not in p:
-              raise SystemExit("Alpha7A payload placeholder missing")
-          p = p.replace("__EMBEDDED_TS_AUTHKEY__", key, 1)
-          Path("alpha7a/app/src/main/assets/setup.sh").write_text(p)
-          PY
+          cp bootstrap/setup.sh alpha7a/app/src/main/assets/setup.sh
 
       - name: Build Alpha7A APK
         run: |
           set -Eeuo pipefail
-          gradle --no-daemon :app:assembleDebug
+          gradle -p alpha7a --no-daemon :app:assembleDebug
           mkdir -p site
           cp alpha7a/app/build/outputs/apk/debug/app-debug.apk site/android-development-appliance-v0.5.0-alpha.7a.apk
           sha256sum site/android-development-appliance-v0.5.0-alpha.7a.apk > site/android-development-appliance-v0.5.0-alpha.7a.apk.sha256
@@ -98,11 +90,12 @@ jobs:
           <p>Termux baseline tools, Tailscale userspace, unique hostname, SSH on 8022, Debian via proot-distro, Debian SSH on 2222, proxy Level 1/2, SOCKS5 on 1055, local details/operations page on port 8080, Git/Git LFS/Python/build tooling and diagnostics.</p></div>
           <div class="card warn"><b>Important:</b> Android and Termux deliberately require these security approvals for a third-party app to execute commands in Termux. This is why Alpha7A cannot honestly claim zero-touch provisioning on a normal stock Android device. The actual provisioning after approval is automatic.</div>
           <div class="card"><h2>Alpha7A vs Alpha7B</h2><p><b>Alpha7A</b> = lightweight companion + official Termux. <b>Alpha7B</b> = self-contained custom Termux build and remains preserved as the alternate track.</p></div>
-          <div class="card"><h2>Security</h2><p>The Tailscale credential is injected only during the private GitHub Actions build and is not stored in the public repository source. This Alpha7A test APK contains the credential, so treat the APK as sensitive.</p></div>
+          <div class="card"><h2>Security</h2><p>The Tailscale auth key is entered on the device during first-run provisioning. It is not embedded in the APK or published to the repository. The key is stored locally with restricted permissions and removed after successful authentication.</p></div>
           </body></html>
           HTML
 
       - name: Publish site and APK to public distribution repository
+        if: github.event_name != 'pull_request'
         env:
           DISTRIBUTION_TOKEN: ${{ secrets.DISTRIBUTION_TOKEN }}
         run: |
