@@ -94,7 +94,7 @@ public class MainActivity extends Activity {
             "• Android grants Alpha7A the Termux RUN_COMMAND permission\n" +
             "• Tap START once\n" +
             "• Termux performs package, Tailscale, Debian, SSH, proxy and web-page provisioning\n\n" +
-            "The Alpha7A APK contains the test provisioning payload. Treat this test APK as sensitive because the configured Tailscale credential is embedded during the private build.",
+            "The provisioning payload is included in the APK, but no Tailscale auth key is embedded. Enter the key during first-run provisioning when prompted.",
             14));
 
         ScrollView scroll = new ScrollView(this);
